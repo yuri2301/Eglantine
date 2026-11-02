@@ -349,6 +349,34 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
 
+        // This fork's Switch 2 profile (6-core desktop CPU, 12 GB NVIDIA GPU, 16 GB RAM): the
+        // renderer settings that cost speed or memory without a visible gain in these titles are
+        // fixed here, per game, instead of being left to the configuration. EDEN_NX2_KEEP_SETTINGS=1
+        // keeps the configured values.
+        static const bool keep_settings = std::getenv("EDEN_NX2_KEEP_SETTINGS") != nullptr;
+        if (switch2_program && !keep_settings) {
+            const auto force = [](auto& setting, auto value, const char* name) {
+                if (setting.GetValue() == value) {
+                    return;
+                }
+                setting.SetGlobal(false);
+                setting.SetValue(value);
+                LOG_INFO(Core, "Switch 2 profile: {} = {}", name, setting.ToString());
+            };
+            // Async shaders: draws wait for no pipeline build, so new shaders stop stalling frames.
+            force(Settings::values.use_asynchronous_shaders, true, "use_asynchronous_shaders");
+            // Low accuracy skips the GPU-written buffer readbacks the High level waits for.
+            force(Settings::values.gpu_accuracy, Settings::GpuAccuracy::Low, "gpu_accuracy");
+            // Reactive flushing traps CPU reads of GPU-written memory; Switch 2 titles barely make
+            // them (NX2_NOTES row 131) and each trap costs a flush.
+            force(Settings::values.use_reactive_flushing, false, "use_reactive_flushing");
+            // ASTC as RGBA8 takes four times the VRAM and its staging copies four times the RAM.
+            force(Settings::values.astc_recompression, Settings::AstcRecompression::Bc3,
+                  "astc_recompression");
+            // Present at the display's rate without tearing; a late frame is shown at once.
+            force(Settings::values.vsync_mode, Settings::VSyncMode::FifoRelaxed, "vsync_mode");
+        }
+
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz
         // every tick-based time in the game was off by 1.63x: elapsed times read short and a frame
