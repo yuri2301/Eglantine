@@ -5,6 +5,7 @@
 // clang-format off
 #include <windows.h>
 #include <sysinfoapi.h>
+#include <psapi.h>
 // clang-format on
 #else
 #include <sys/types.h>
@@ -67,6 +68,29 @@ static MemoryInfo Detect() {
 const MemoryInfo& GetMemInfo() {
     static MemoryInfo mem_info = Detect();
     return mem_info;
+}
+
+MemoryUsage GetMemoryUsage() {
+    MemoryUsage usage{};
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    counters.cb = sizeof(counters);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(),
+                                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                                sizeof(counters))) {
+        usage.process_working_set = counters.WorkingSetSize;
+        usage.process_private = counters.PrivateUsage;
+    }
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        usage.available_physical = status.ullAvailPhys;
+        usage.commit_limit = status.ullTotalPageFile;
+        usage.commit_used = status.ullTotalPageFile - status.ullAvailPageFile;
+        usage.physical_load_percent = status.dwMemoryLoad;
+    }
+#endif
+    return usage;
 }
 
 } // namespace Common

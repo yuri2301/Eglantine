@@ -7,11 +7,13 @@
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 #include "common/common_types.h"
 #include "common/logging.h"
 #include "common/cpu_features.h"
+#include "common/memory_detect.h"
 
 // EDEN_NX2_GPU_PROFILE: time where the GPU thread spends its time. Each zone counts its own
 // (exclusive) time, nested zones excluded; every 10 s the thread logs each zone's share.
@@ -65,7 +67,12 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
-inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+// This fork profiles by default while it is being tuned (every run's log carries the numbers);
+// EDEN_NX2_GPU_PROFILE=0 turns it off.
+inline const bool g_enabled = [] {
+    const char* value = std::getenv("EDEN_NX2_GPU_PROFILE");
+    return value == nullptr || value[0] != '0';
+}();
 
 inline bool Enabled() {
     return g_enabled;
@@ -191,6 +198,19 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
+    if (std::string_view{thread_name} == "GPU thread") {
+        // Host memory at the same moment, to tell the emulator's own growth from the host's.
+        constexpr double MiB = 1024.0 * 1024.0;
+        const auto usage = Common::GetMemoryUsage();
+        LOG_INFO(HW_GPU,
+                 "Memory: process working set {:.0f} MiB, private {:.0f} MiB | host RAM {}% used, "
+                 "{:.0f} MiB free | commit {:.0f} / {:.0f} MiB",
+                 static_cast<double>(usage.process_working_set) / MiB,
+                 static_cast<double>(usage.process_private) / MiB, usage.physical_load_percent,
+                 static_cast<double>(usage.available_physical) / MiB,
+                 static_cast<double>(usage.commit_used) / MiB,
+                 static_cast<double>(usage.commit_limit) / MiB);
+    }
     data = {};
     data.window_start = now;
 }

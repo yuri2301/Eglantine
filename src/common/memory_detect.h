@@ -18,4 +18,16 @@ struct MemoryInfo {
  */
 [[nodiscard]] const MemoryInfo& GetMemInfo();
 
+/// What this process and the host use right now, in bytes (zeros where the host can't tell).
+struct MemoryUsage {
+    u64 process_working_set{}; ///< Physical memory the process occupies
+    u64 process_private{};     ///< Memory committed to the process (its share of the commit charge)
+    u64 available_physical{};  ///< Host physical memory still free
+    u64 commit_used{};         ///< Host commit charge (RAM plus page file in use)
+    u64 commit_limit{};        ///< Host commit limit
+    u32 physical_load_percent{};
+};
+
+[[nodiscard]] MemoryUsage GetMemoryUsage();
+
 } // namespace Common
