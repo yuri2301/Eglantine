@@ -251,7 +251,19 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // On every GPU: past what a frame needs, more device memory only keeps the textures of earlier
     // scenes (title 1 filled 6.7 GB of an 8 GB card and draws its races in ~5 GB), so collect from
     // MaxCriticalMemory on rather than near the card's budget.
-    critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+    u64 max_critical = MaxCriticalMemory;
+    if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
+        // Cards with a 10 GiB+ budget (this fork's 12 GB RTX 3060: ~11.3 GiB) let textures use
+        // three quarters of it: at 5 GiB title 1 evicted ~21,700 images in a 50 minute session with
+        // VRAM at 5.7 of 11.3 GiB, and each one came back as an upload (and an ASTC decode) the next
+        // time the camera turned to it. The other quarter stays for buffers, render targets and
+        // other programs; the budget-following thresholds (TickFrame) still collect before that.
+        const u64 budget = runtime.GetDeviceMemoryBudget();
+        if (budget >= 10_GiB) {
+            max_critical = (std::max)(max_critical, budget / 4 * 3);
+        }
+    }
+    critical_memory = (std::min)(critical_memory, max_critical);
     expected_memory =
         (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
     minimum_memory =
@@ -340,14 +352,20 @@ void TextureCache<P>::TickFrame() {
                     critical_memory =
                         budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
+                    ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
-                    // the time).
+                    // the time), compared after the caps: before them every check differed from
+                    // the capped value and logged twice every 30 frames.
                     const u64 change = critical_memory > old_critical
                                            ? critical_memory - old_critical
                                            : old_critical - critical_memory;
                     const bool log = budget_check_frames == 1 || change >= 256_MiB;
-                    ApplyThresholdOverrides(log);
                     if (log) {
+                        LOG_INFO(HW_GPU,
+                                 "Texture cache thresholds: expected {} MiB, critical {} MiB, "
+                                 "minimum {} MiB",
+                                 expected_memory >> 20, critical_memory >> 20,
+                                 minimum_memory >> 20);
                         LOG_INFO(HW_GPU,
                                  "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
                                  margin >> 20, pressure_margin >> 20, slack_margin >> 20);

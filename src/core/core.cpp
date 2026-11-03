@@ -375,6 +375,17 @@ struct System::Impl {
                   "astc_recompression");
             // Present at the display's rate without tearing; a late frame is shown at once.
             force(Settings::values.vsync_mode, Settings::VSyncMode::FifoRelaxed, "vsync_mode");
+            // Conservative caps Eden's device memory figure at 7 GiB at 1x; the 12 GB card's
+            // budget is ~11.3 GiB.
+            force(Settings::values.vram_usage_mode, Settings::VramUsageMode::Aggressive,
+                  "vram_usage_mode");
+            // Fences signal as soon as the work is submitted instead of after the GPU ran it:
+            // the GPU thread and the game stop waiting on the host GPU (the user measured the
+            // clearest gain from this one).
+            force(Settings::values.gpu_fence_behavior, Settings::GpuFenceBehavior::Immediate,
+                  "gpu_fence_behavior");
+            // Presentation on its own thread, so the GPU thread does not wait for the swapchain.
+            force(Settings::values.async_presentation, true, "async_presentation");
         }
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
