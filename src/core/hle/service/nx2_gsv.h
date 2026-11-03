@@ -1709,10 +1709,12 @@ private:
         // while the GPU thread runs frame N (the console keeps several frames in flight). Waiting
         // for this frame serialized the two: 8-56 ms of every 34-105 ms frame on title 1.
         // EDEN_NX2_FRAMES_AHEAD=0 restores the wait for the current frame.
-        static const bool frames_ahead = [] {
-            const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
-            return value == nullptr || value[0] != '0';
-        }();
+        // "Prepare the next frame while the GPU thread works" (nx2_frames_ahead);
+        // EDEN_NX2_FRAMES_AHEAD=0/1 still overrides it.
+        static const char* const frames_ahead_env = std::getenv("EDEN_NX2_FRAMES_AHEAD");
+        const bool frames_ahead = frames_ahead_env != nullptr
+                                      ? frames_ahead_env[0] != '0'
+                                      : Settings::values.nx2_frames_ahead.GetValue();
         const auto entered = std::chrono::steady_clock::now();
         if (frames_ahead) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",

@@ -40,6 +40,7 @@
 #include "yuzu/configuration/configure_graphics.h"
 #include "yuzu/configuration/configure_graphics_advanced.h"
 #include "yuzu/configuration/configure_graphics_extensions.h"
+#include "yuzu/configuration/configure_nx2_rig.h"
 #include "yuzu/configuration/configure_input_per_game.h"
 #include "yuzu/configuration/configure_network.h"
 #include "yuzu/configuration/configure_per_game.h"
@@ -65,6 +66,7 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
         std::make_unique<ConfigureGraphicsAdvanced>(system_, tab_group, *builder, this);
     graphics_extensions_tab =
         std::make_unique<ConfigureGraphicsExtensions>(system_, tab_group, *builder, this);
+    nx2_rig_tab = std::make_unique<ConfigureNx2Rig>(system_, tab_group, *builder, this);
     graphics_tab = std::make_unique<ConfigureGraphics>(
         system_, vk_device_records, [&]() { graphics_advanced_tab->ExposeComputeOption(); },
         [](Settings::AspectRatio, Settings::ResolutionSetup) {}, tab_group, *builder, this);
@@ -75,6 +77,7 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
 
     ui->setupUi(this);
 
+    ui->tabWidget->addTab(nx2_rig_tab.get(), tr("Switch 2 Rig"));
     ui->tabWidget->addTab(addons_tab.get(), tr("Add-Ons"));
     ui->tabWidget->addTab(system_tab.get(), tr("System"));
     ui->tabWidget->addTab(cpu_tab.get(), tr("CPU"));

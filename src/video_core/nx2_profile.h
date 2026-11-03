@@ -14,6 +14,7 @@
 #include "common/logging.h"
 #include "common/cpu_features.h"
 #include "common/memory_detect.h"
+#include "common/settings.h"
 
 // EDEN_NX2_GPU_PROFILE: time where the GPU thread spends its time. Each zone counts its own
 // (exclusive) time, nested zones excluded; every 10 s the thread logs each zone's share.
@@ -66,16 +67,19 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "fence skipped", "method", "split drain", "split wait",
 };
 
-// Read once at startup: Enabled() runs several times per method write (no guard to check).
-// This fork profiles by default while it is being tuned (every run's log carries the numbers);
-// EDEN_NX2_GPU_PROFILE=0 turns it off.
-inline const bool g_enabled = [] {
-    const char* value = std::getenv("EDEN_NX2_GPU_PROFILE");
-    return value == nullptr || value[0] != '0';
-}();
+// "Log performance and memory every 10 seconds" (nx2_gpu_profiler, on by default in this fork);
+// EDEN_NX2_GPU_PROFILE=0/1 overrides it. Read on first use (the GPU thread's first command, after
+// the configuration is loaded) and kept: Enabled() runs several times per method write.
+inline bool ReadEnabled() {
+    if (const char* value = std::getenv("EDEN_NX2_GPU_PROFILE")) {
+        return value[0] != '0';
+    }
+    return Settings::values.nx2_gpu_profiler.GetValue();
+}
 
 inline bool Enabled() {
-    return g_enabled;
+    static const bool enabled = ReadEnabled();
+    return enabled;
 }
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones

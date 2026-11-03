@@ -38,6 +38,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_resource_limit.h"
 #include "core/hle/kernel/k_scheduler.h"
+#include "common/thread.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/physical_core.h"
 #include "core/hle/service/acc/profile_manager.h"
@@ -349,44 +350,56 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
 
-        // This fork's Switch 2 profile (6-core desktop CPU, 12 GB NVIDIA GPU, 16 GB RAM): the
-        // renderer settings that cost speed or memory without a visible gain in these titles are
-        // fixed here, per game, instead of being left to the configuration. EDEN_NX2_KEEP_SETTINGS=1
-        // keeps the configured values.
+        // This fork's rig profile (RTX 3060 12 GB, i5-10400F 6C/12T, 16 GB RAM; "Switch 2 Rig" tab,
+        // nx2_rig_profile): settings the user has not changed take the values tuned for the rig.
+        // A setting counts as changed when the game has its own value (Properties) or the global
+        // value differs from Eden's default; both are kept. The rig value is a per-game value of
+        // this session only (RestoreGlobalState drops it). EDEN_NX2_KEEP_SETTINGS=1 skips it.
         static const bool keep_settings = std::getenv("EDEN_NX2_KEEP_SETTINGS") != nullptr;
-        if (switch2_program && !keep_settings) {
-            const auto force = [](auto& setting, auto value, const char* name) {
+        if (switch2_program && !keep_settings && Settings::values.nx2_rig_profile.GetValue()) {
+            const auto suggest = [](auto& setting, auto value, const char* name) {
+                if (!setting.UsingGlobal()) {
+                    LOG_INFO(Core, "Rig profile: {} kept at the game's own {}", name,
+                             setting.ToString());
+                    return;
+                }
+                if (setting.GetValue(true) != setting.GetDefault()) {
+                    LOG_INFO(Core, "Rig profile: {} kept at the configured {}", name,
+                             setting.ToString());
+                    return;
+                }
                 if (setting.GetValue() == value) {
                     return;
                 }
                 setting.SetGlobal(false);
                 setting.SetValue(value);
-                LOG_INFO(Core, "Switch 2 profile: {} = {}", name, setting.ToString());
+                LOG_INFO(Core, "Rig profile: {} = {}", name, setting.ToString());
             };
             // Async shaders: draws wait for no pipeline build, so new shaders stop stalling frames.
-            force(Settings::values.use_asynchronous_shaders, true, "use_asynchronous_shaders");
+            suggest(Settings::values.use_asynchronous_shaders, true, "use_asynchronous_shaders");
             // Low accuracy skips the GPU-written buffer readbacks the High level waits for.
-            force(Settings::values.gpu_accuracy, Settings::GpuAccuracy::Low, "gpu_accuracy");
+            suggest(Settings::values.gpu_accuracy, Settings::GpuAccuracy::Low, "gpu_accuracy");
             // Reactive flushing traps CPU reads of GPU-written memory; Switch 2 titles barely make
             // them (NX2_NOTES row 131) and each trap costs a flush.
-            force(Settings::values.use_reactive_flushing, false, "use_reactive_flushing");
+            suggest(Settings::values.use_reactive_flushing, false, "use_reactive_flushing");
             // ASTC as RGBA8 takes four times the VRAM and its staging copies four times the RAM.
-            force(Settings::values.astc_recompression, Settings::AstcRecompression::Bc3,
-                  "astc_recompression");
+            suggest(Settings::values.astc_recompression, Settings::AstcRecompression::Bc3,
+                    "astc_recompression");
             // Present at the display's rate without tearing; a late frame is shown at once.
-            force(Settings::values.vsync_mode, Settings::VSyncMode::FifoRelaxed, "vsync_mode");
+            suggest(Settings::values.vsync_mode, Settings::VSyncMode::FifoRelaxed, "vsync_mode");
             // Conservative caps Eden's device memory figure at 7 GiB at 1x; the 12 GB card's
             // budget is ~11.3 GiB.
-            force(Settings::values.vram_usage_mode, Settings::VramUsageMode::Aggressive,
-                  "vram_usage_mode");
-            // Fences signal as soon as the work is submitted instead of after the GPU ran it:
-            // the GPU thread and the game stop waiting on the host GPU (the user measured the
-            // clearest gain from this one).
-            force(Settings::values.gpu_fence_behavior, Settings::GpuFenceBehavior::Immediate,
-                  "gpu_fence_behavior");
+            suggest(Settings::values.vram_usage_mode, Settings::VramUsageMode::Aggressive,
+                    "vram_usage_mode");
+            // Fences signal as soon as the work is submitted instead of after the GPU ran it: the
+            // GPU thread and the game stop waiting on the host GPU.
+            suggest(Settings::values.gpu_fence_behavior, Settings::GpuFenceBehavior::Immediate,
+                    "gpu_fence_behavior");
             // Presentation on its own thread, so the GPU thread does not wait for the swapchain.
-            force(Settings::values.async_presentation, true, "async_presentation");
+            suggest(Settings::values.async_presentation, true, "async_presentation");
         }
+        Common::SetProcessHighPriority(switch2_program &&
+                                       Settings::values.nx2_high_priority.GetValue());
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz

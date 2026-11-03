@@ -49,6 +49,7 @@ enum class Category : u32 {
     Services,
     Paths,
     LibraryApplet,
+    Nx2Rig, ///< This fork's Switch 2 / host machine options (RTX 3060 12 GB, i5-10400F, 16 GB)
     MaxEnum,
 };
 

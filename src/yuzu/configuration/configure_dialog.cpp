@@ -26,6 +26,7 @@
 #include "yuzu/configuration/configure_input.h"
 #include "yuzu/configuration/configure_input_player.h"
 #include "yuzu/configuration/configure_network.h"
+#include "yuzu/configuration/configure_nx2_rig.h"
 #include "yuzu/configuration/configure_profile_manager.h"
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/configure_ui.h"
@@ -49,6 +50,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
           std::make_unique<ConfigureGraphicsAdvanced>(system_, nullptr, *builder, this)},
       graphics_extensions_tab{
           std::make_unique<ConfigureGraphicsExtensions>(system_, nullptr, *builder, this)},
+      nx2_rig_tab{std::make_unique<ConfigureNx2Rig>(system_, nullptr, *builder, this)},
       ui_tab{std::make_unique<ConfigureUi>(system_, this)},
       graphics_tab{std::make_unique<ConfigureGraphics>(
           system_, vk_device_records, [&]() { graphics_advanced_tab->ExposeComputeOption(); },
@@ -75,6 +77,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     ui->tabWidget->addTab(graphics_tab.get(), tr("Graphics"));
     ui->tabWidget->addTab(graphics_advanced_tab.get(), tr("GraphicsAdvanced"));
     ui->tabWidget->addTab(graphics_extensions_tab.get(), tr("GraphicsExtra"));
+    ui->tabWidget->addTab(nx2_rig_tab.get(), tr("Switch 2 Rig"));
     ui->tabWidget->addTab(hotkeys_tab.get(), tr("Hotkeys"));
     ui->tabWidget->addTab(input_tab.get(), tr("Controls"));
     ui->tabWidget->addTab(profile_tab.get(), tr("Profiles"));
@@ -133,6 +136,7 @@ void ConfigureDialog::ApplyConfiguration() {
     graphics_tab->ApplyConfiguration();
     graphics_advanced_tab->ApplyConfiguration();
     graphics_extensions_tab->ApplyConfiguration();
+    nx2_rig_tab->ApplyConfiguration();
     audio_tab->ApplyConfiguration();
     debug_tab_tab->ApplyConfiguration();
     web_tab->ApplyConfiguration();
@@ -171,8 +175,9 @@ void ConfigureDialog::HandleApplyButtonClicked() {
 Q_DECLARE_METATYPE(QList<QWidget*>);
 
 void ConfigureDialog::PopulateSelectionList() {
-    const std::array<std::pair<QString, QList<QWidget*>>, 6> items{
-        {{tr("General"),
+    const std::array<std::pair<QString, QList<QWidget*>>, 7> items{
+        {{tr("Switch 2 Rig"), {nx2_rig_tab.get()}},
+         {tr("General"),
           {general_tab.get(), hotkeys_tab.get(), ui_tab.get(), web_tab.get(), debug_tab_tab.get()}},
          {tr("System"),
           {system_tab.get(), profile_tab.get(), network_tab.get(), filesystem_tab.get(),

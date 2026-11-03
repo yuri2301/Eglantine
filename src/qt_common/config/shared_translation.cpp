@@ -361,7 +361,45 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
 
     // Ui Games list
 
+    // Switch 2 rig (this fork)
+    INSERT(Settings, nx2_rig_profile, tr("Apply the rig profile to Switch 2 games"),
+           tr("When a Switch 2 game starts, settings you have not changed yourself take the values "
+              "tuned for this PC (RTX 3060 12 GB, i5-10400F, 16 GB RAM): asynchronous shaders on, "
+              "GPU mode Fast, reactive flushing off, ASTC as BC3, VSync FIFO Relaxed, VRAM "
+              "Aggressive, fence behavior Immediate and asynchronous presentation.\nAnything you set "
+              "in Configure or in the game's Properties is kept as you set it."));
+    INSERT(Settings, nx2_honor_cpu_clock, tr("Let \"CPU Clocks\" speed up the Switch 2 timer"),
+           tr("Off (recommended): Switch 2 games keep a real-time clock whatever CPU Clocks is set "
+              "to.\nOn: Boost/Overclock also make the game's clock run 1.7x/2x faster, which "
+              "unlocks its frame limiter (100+ fps in light scenes) and distorts its speed."));
+    INSERT(Settings, nx2_frames_ahead, tr("Prepare the next frame while the GPU thread works"),
+           tr("The game builds frame N+1 while the emulator's GPU thread processes frame N, "
+              "instead of the two taking turns.\nTurn off only to diagnose a game that misbehaves "
+              "with it."));
+    INSERT(Settings, nx2_gpu_split, tr("GPU thread split:"),
+           tr("How the emulator's GPU work is spread over threads.\nMacros and methods (default): "
+              "two threads, the first reads commands and runs macros, the second sets up and "
+              "records draws.\nMethods: macros move to the second thread.\nOff: one thread "
+              "(slowest; for diagnosis).\nTakes effect when a game starts."));
+    INSERT(Settings, nx2_texture_vram_share, tr("Share of VRAM for textures"),
+           tr("How much of the GPU's memory budget the texture cache may fill before it starts "
+              "evicting textures, on cards with 10 GB or more (the RTX 3060 has ~11.3 GB).\n"
+              "Higher: fewer textures decoded again when you return to an area. Lower: more room "
+              "for other programs (recording, browser)."));
+    INSERT(Settings, nx2_pin_gpu_threads, tr("Keep the GPU threads on their own CPU cores"),
+           tr("Pins the two GPU threads to the last two physical cores of the CPU, so Windows does "
+              "not move them around or make them share a core with each other.\nExperimental: "
+              "compare with it off."));
+    INSERT(Settings, nx2_high_priority, tr("Run Eglantine at high priority"),
+           tr("Raises the emulator's process priority while a game runs, so background programs "
+              "take CPU time from it less often.\nExperimental."));
+    INSERT(Settings, nx2_gpu_profiler, tr("Log performance and memory every 10 seconds"),
+           tr("Writes the GPU threads' time breakdown and the memory use of the emulator and of "
+              "Windows to the log every 10 s. Costs well under 1% of speed; needed for tuning "
+              "reports."));
+
 #undef INSERT
+
 
     return translations;
 }
@@ -695,6 +733,13 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(GameListMode, TreeView, tr("Tree View")),
                               PAIR(GameListMode, GridView, tr("Grid View")),
+                          }});
+
+    translations->insert({Settings::EnumMetadata<Settings::Nx2GpuSplit>::Index(),
+                          {
+                              PAIR(Nx2GpuSplit, Off, tr("Off (one thread)")),
+                              PAIR(Nx2GpuSplit, Methods, tr("Methods")),
+                              PAIR(Nx2GpuSplit, MethodsAndMacros, tr("Macros and methods")),
                           }});
 
 #undef PAIR

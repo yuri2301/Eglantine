@@ -85,9 +85,18 @@ void GpuSplit::CheckOwner(const char* where) {
 GpuSplit GpuSplit::instance;
 
 void GpuSplit::MaybeStart(Core::System& system_) {
-    static const char mode = [] {
-        const char* value = std::getenv("EDEN_NX2_SPLIT");
-        return value != nullptr ? value[0] : '2';
+    // "GPU thread split" (nx2_gpu_split); EDEN_NX2_SPLIT=0/1/2 still overrides it.
+    static const char* const env_mode = std::getenv("EDEN_NX2_SPLIT");
+    const char mode = env_mode != nullptr ? env_mode[0] : [] {
+        switch (Settings::values.nx2_gpu_split.GetValue()) {
+        case Settings::Nx2GpuSplit::Off:
+            return '0';
+        case Settings::Nx2GpuSplit::Methods:
+            return '1';
+        case Settings::Nx2GpuSplit::MethodsAndMacros:
+        default:
+            return '2';
+        }
     }();
     const bool wanted = mode == '1' || mode == '2';
     if (!wanted || !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
@@ -312,6 +321,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
+    if (Settings::values.nx2_pin_gpu_threads.GetValue()) {
+        Common::PinCurrentThreadToPhysicalCoreFromLast(1);
+    }
     system->RegisterHostThread();
 #ifdef _WIN32
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);

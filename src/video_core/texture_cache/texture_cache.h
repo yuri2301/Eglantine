@@ -254,13 +254,16 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     u64 max_critical = MaxCriticalMemory;
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
         // Cards with a 10 GiB+ budget (this fork's 12 GB RTX 3060: ~11.3 GiB) let textures use
-        // three quarters of it: at 5 GiB title 1 evicted ~21,700 images in a 50 minute session with
-        // VRAM at 5.7 of 11.3 GiB, and each one came back as an upload (and an ASTC decode) the next
-        // time the camera turned to it. The other quarter stays for buffers, render targets and
-        // other programs; the budget-following thresholds (TickFrame) still collect before that.
+        // the "Share of VRAM for textures" (nx2_texture_vram_share, 75% by default): at 5 GiB
+        // title 1 evicted ~21,700 images in a 50 minute session with VRAM at 5.7 of 11.3 GiB, and
+        // each one came back as an upload (and an ASTC decode) the next time the camera turned to
+        // it. The rest stays for buffers, render targets and other programs; the budget-following
+        // thresholds (TickFrame) still collect before that.
         const u64 budget = runtime.GetDeviceMemoryBudget();
         if (budget >= 10_GiB) {
-            max_critical = (std::max)(max_critical, budget / 4 * 3);
+            const u64 share = std::clamp<u64>(Settings::values.nx2_texture_vram_share.GetValue(),
+                                              50, 90);
+            max_critical = (std::max)(max_critical, budget / 100 * share);
         }
     }
     critical_memory = (std::min)(critical_memory, max_critical);

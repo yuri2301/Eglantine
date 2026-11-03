@@ -81,6 +81,9 @@ add_executable(yuzu
     configuration/configure_graphics_extensions.cpp
     configuration/configure_graphics_extensions.h
     configuration/configure_graphics_extensions.ui
+    configuration/configure_nx2_rig.cpp
+    configuration/configure_nx2_rig.h
+    configuration/configure_nx2_rig.ui
     configuration/configure_hotkeys.cpp
     configuration/configure_hotkeys.h
     configuration/configure_hotkeys.ui

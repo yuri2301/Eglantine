@@ -35,6 +35,7 @@ class ConfigureCpu;
 class ConfigureGraphics;
 class ConfigureGraphicsAdvanced;
 class ConfigureGraphicsExtensions;
+class ConfigureNx2Rig;
 class ConfigureInputPerGame;
 class ConfigureSystem;
 class ConfigureNetwork;
@@ -90,6 +91,7 @@ private:
     std::unique_ptr<ConfigureCpu> cpu_tab;
     std::unique_ptr<ConfigureGraphicsAdvanced> graphics_advanced_tab;
     std::unique_ptr<ConfigureGraphicsExtensions> graphics_extensions_tab;
+    std::unique_ptr<ConfigureNx2Rig> nx2_rig_tab;
     std::unique_ptr<ConfigureGraphics> graphics_tab;
     std::unique_ptr<ConfigureInputPerGame> input_tab;
     std::unique_ptr<ConfigureSystem> system_tab;

@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "common/adpf.h"
 #include "common/error.h"
@@ -570,6 +571,52 @@ void SetCurrentThreadToAllCores() {
 #if defined(__ANDROID__)
     ADPF::RemoveCurrentThread();
     SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
+#endif
+}
+
+bool PinCurrentThreadToPhysicalCoreFromLast(u32 index_from_last) {
+#ifdef _WIN32
+    DWORD length = 0;
+    GetLogicalProcessorInformation(nullptr, &length);
+    if (length == 0) {
+        return false;
+    }
+    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> info(length /
+                                                          sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+    if (!GetLogicalProcessorInformation(info.data(), &length)) {
+        return false;
+    }
+    std::vector<ULONG_PTR> cores;
+    for (const auto& entry : info) {
+        if (entry.Relationship == RelationProcessorCore) {
+            cores.push_back(entry.ProcessorMask);
+        }
+    }
+    if (index_from_last >= cores.size()) {
+        return false;
+    }
+    const ULONG_PTR mask = cores[cores.size() - 1 - index_from_last];
+    if (SetThreadAffinityMask(GetCurrentThread(), mask) == 0) {
+        return false;
+    }
+    LOG_INFO(Common, "Thread pinned to physical core {} of {} (mask {:#x})",
+             cores.size() - 1 - index_from_last, cores.size(), static_cast<u64>(mask));
+    return true;
+#else
+    (void)index_from_last;
+    return false;
+#endif
+}
+
+void SetProcessHighPriority(bool high) {
+#ifdef _WIN32
+    const DWORD wanted = high ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS;
+    if (GetPriorityClass(GetCurrentProcess()) != wanted &&
+        SetPriorityClass(GetCurrentProcess(), wanted)) {
+        LOG_INFO(Common, "Process priority: {}", high ? "high" : "normal");
+    }
+#else
+    (void)high;
 #endif
 }
 

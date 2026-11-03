@@ -225,8 +225,12 @@ void CoreTiming::ResetTicks() {
 
 u64 CoreTiming::GetClockTicks() const {
     u64 fres = is_multicore ? Common::g_wall_clock.GetCNTPCT() : Common::g_wall_clock.CPUTickToGuestCNTPCT(cpu_ticks);
+    // CPU Clocks Boost/Overclock scale the counter the game reads (x1.7 / x2). Switch 2 titles
+    // time their frame limiter and game speed with it (Mario Kart World: 100+ fps in light scenes,
+    // wrong kart speed), so they keep a real-time counter unless nx2_honor_cpu_clock is on.
     if (const u32 target = CpuClockTargetMhz(Settings::values.cpu_clock.GetValue());
-        target != CPU_CLOCK_BASE_MHZ) {
+        target != CPU_CLOCK_BASE_MHZ && (!Settings::CurrentProgramIsSwitch2() ||
+                                         Settings::values.nx2_honor_cpu_clock.GetValue())) {
         fres = fres * target / CPU_CLOCK_BASE_MHZ;
     }
     if (::Settings::values.sync_core_speed.GetValue()) {

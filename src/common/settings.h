@@ -635,6 +635,26 @@ struct Values {
                                                  true};
 #endif
 
+    // Switch 2 rig (this fork: RTX 3060 12 GB, i5-10400F 6C/12T, 16 GB RAM) //
+    SwitchableSetting<bool> nx2_rig_profile{linkage, true, "nx2_rig_profile", Category::Nx2Rig};
+    SwitchableSetting<bool> nx2_honor_cpu_clock{linkage, false, "nx2_honor_cpu_clock",
+                                                Category::Nx2Rig};
+    SwitchableSetting<bool> nx2_frames_ahead{linkage, true, "nx2_frames_ahead", Category::Nx2Rig};
+    SwitchableSetting<Nx2GpuSplit, true> nx2_gpu_split{linkage, Nx2GpuSplit::MethodsAndMacros,
+                                                       "nx2_gpu_split", Category::Nx2Rig};
+    SwitchableSetting<u32, true> nx2_texture_vram_share{linkage,
+                                                        75,
+                                                        50,
+                                                        90,
+                                                        "nx2_texture_vram_share",
+                                                        Category::Nx2Rig,
+                                                        Specialization::Scalar};
+    SwitchableSetting<bool> nx2_pin_gpu_threads{linkage, false, "nx2_pin_gpu_threads",
+                                                Category::Nx2Rig};
+    SwitchableSetting<bool> nx2_high_priority{linkage, false, "nx2_high_priority",
+                                              Category::Nx2Rig};
+    SwitchableSetting<bool> nx2_gpu_profiler{linkage, true, "nx2_gpu_profiler", Category::Nx2Rig};
+
     // Renderer Hacks //
     SwitchableSetting<GpuClock> gpu_clock{linkage,
                                           GpuClock::Boost,

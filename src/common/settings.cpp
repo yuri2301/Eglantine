@@ -317,6 +317,8 @@ const char* TranslateCategory(Category category) {
         return "Services";
     case Category::Paths:
         return "Paths";
+    case Category::Nx2Rig:
+        return "Nx2Rig";
     case Category::MaxEnum:
         break;
     }

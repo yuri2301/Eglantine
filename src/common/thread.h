@@ -112,6 +112,14 @@ void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
 
+/// Pins the calling thread to one physical core (all of its logical processors), counted from
+/// the last core: 0 is the last, 1 the one before it. Windows only; returns false elsewhere or if
+/// the core does not exist.
+bool PinCurrentThreadToPhysicalCoreFromLast(u32 index_from_last);
+
+/// Raises (true) or restores (false) the process priority class. Windows only.
+void SetProcessHighPriority(bool high);
+
 void RefreshThreadPolicies();
 void PollThreadPolicies();
 
