@@ -346,7 +346,7 @@ if (CXX_GCC OR CXX_CLANG)
         # See https://gcc.gnu.org/onlinedocs/gcc/x86-Options.html
         # Generic supports Pentium Pro instruction set and above
         # TODO: if a value is unknown, pass that as march and mtune
-        set(YUZU_BUILD_PRESET "custom" CACHE STRING "Build preset to use. One of: custom, generic, v3, zen2, zen4, native")
+        set(YUZU_BUILD_PRESET "custom" CACHE STRING "Build preset to use. One of: custom, generic, v3, zen2, zen4, cometlake, native")
 
         if (${YUZU_BUILD_PRESET} STREQUAL "generic")
             set(march x86-64)
@@ -360,6 +360,13 @@ if (CXX_GCC OR CXX_CLANG)
         elseif (${YUZU_BUILD_PRESET} STREQUAL "zen4")
             set(march znver4)
             set(mtune znver4)
+        elseif (${YUZU_BUILD_PRESET} STREQUAL "cometlake")
+            # This fork's machine, an i5-10400F: Comet Lake is the Skylake core (AVX2, FMA, BMI1/2,
+            # LZCNT, F16C, AES, no AVX-512 or SHA). The emulator's own code (GPU threads, macros,
+            # texture and ASTC paths, memory copies) is then compiled and scheduled for it instead
+            # of baseline x86-64 + SSE4.1. The binary needs an AVX2 CPU.
+            set(march skylake)
+            set(mtune skylake)
         endif()
     elseif(ARCHITECTURE_arm64)
         # See https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
@@ -383,6 +390,9 @@ if (CXX_GCC OR CXX_CLANG)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=${march} -mtune=${mtune}")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=${march} -mtune=${mtune}")
     endif()
+elseif (MSVC AND ARCHITECTURE_x86_64 AND "${YUZU_BUILD_PRESET}" STREQUAL "cometlake")
+    # MSVC has no Skylake tuning switch; AVX2 code generation is the part that applies.
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/arch:AVX2>)
 endif()
 
 # Configure C++ standard
