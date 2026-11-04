@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -15,9 +16,11 @@
 #include "common/bit_util.h"
 #include "common/common_types.h"
 #include "common/literals.h"
+#include "common/nx2_memory_stats.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/vulkan_common/vulkan_device.h"
+#include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
@@ -135,6 +138,36 @@ void StagingBufferPool::FreeDeferred(StagingBufferRef& ref) {
 
 void StagingBufferPool::TickFrame() {
     current_delete_level = (current_delete_level + 1) % NUM_LEVELS;
+    // For the profiler's memory line: what the staging buffers hold, and this process's use of
+    // the Vulkan heaps (the GPU's own, and system RAM the driver allocated for us).
+    if (static u32 frames{}; (++frames & 63) == 0) {
+        namespace Memory = Common::Nx2Memory;
+        const auto cache_bytes = [](const StagingBuffersCache& cache) {
+            u64 bytes = 0;
+            for (size_t level = 0; level < cache.size(); ++level) {
+                bytes += static_cast<u64>(cache[level].entries.size()) << level;
+            }
+            return bytes;
+        };
+        Memory::Set(Memory::Stat::StagingUpload, cache_bytes(upload_cache));
+        Memory::Set(Memory::Stat::StagingDownload, cache_bytes(download_cache));
+        Memory::Set(Memory::Stat::StagingDevice, cache_bytes(device_local_cache));
+        Memory::Set(Memory::Stat::StreamBuffer, stream_buffer_size);
+        const VmaAllocator allocator = device.GetAllocator();
+        const VkPhysicalDeviceMemoryProperties* properties{};
+        vmaGetMemoryProperties(allocator, &properties);
+        std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+        vmaGetHeapBudgets(allocator, budgets.data());
+        u64 device_heaps = 0;
+        u64 host_heaps = 0;
+        for (u32 heap = 0; heap < properties->memoryHeapCount; ++heap) {
+            const bool device_local =
+                (properties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+            (device_local ? device_heaps : host_heaps) += budgets[heap].usage;
+        }
+        Memory::Set(Memory::Stat::VulkanDeviceHeaps, device_heaps);
+        Memory::Set(Memory::Stat::VulkanHostHeaps, host_heaps);
+    }
 
     ReleaseCache(MemoryUsage::DeviceLocal);
     ReleaseCache(MemoryUsage::Upload);

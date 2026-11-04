@@ -6,7 +6,9 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <atomic>
 #include "dynarmic/backend/x64/block_of_code.h"
+#include "dynarmic/interface/A64/a64.h"
 
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
@@ -33,6 +35,15 @@
 #include "dynarmic/backend/x64/hostloc.h"
 #include "dynarmic/backend/x64/perf_map.h"
 #include "dynarmic/backend/x64/stack_layout.h"
+
+namespace Dynarmic {
+/// Code memory committed by every BlockOfCode alive (Windows; elsewhere 0).
+static std::atomic<std::size_t> g_code_memory_committed{};
+
+std::size_t TotalCodeMemoryCommitted() {
+    return g_code_memory_committed.load(std::memory_order_relaxed);
+}
+}  // namespace Dynarmic
 
 namespace Dynarmic::Backend::X64 {
 
@@ -218,6 +229,12 @@ void BlockOfCode::DisableWriting() {
 #endif
 }
 
+BlockOfCode::~BlockOfCode() {
+#ifdef _WIN32
+    g_code_memory_committed.fetch_sub(committed_size, std::memory_order_relaxed);
+#endif
+}
+
 void BlockOfCode::ClearCache() {
     ASSERT(prelude_complete);
     SetCodePtr(code_begin);
@@ -236,7 +253,9 @@ void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
     if (committed_size < size_ + codesize) {
         // The code space is only reserved (CodeAllocator), so everything up to the end of the next
         // emission has to be committed; in steps, as each VirtualAlloc call is a kernel call.
+        const size_t before = committed_size;
         committed_size = std::min<size_t>(maxSize_, (std::max)(committed_size + COMMIT_STEP, size_ + codesize));
+        g_code_memory_committed.fetch_add(committed_size - before, std::memory_order_relaxed);
 #    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
         VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_READWRITE);
 #    else

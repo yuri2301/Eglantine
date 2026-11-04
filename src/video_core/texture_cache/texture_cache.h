@@ -31,6 +31,7 @@
 #include "video_core/texture_cache/util.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "common/nx2_memory_stats.h"
 #include "video_core/textures/decoders.h"
 
 namespace VideoCommon {
@@ -292,6 +293,7 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
+    Common::Nx2Memory::Set(Common::Nx2Memory::Stat::TextureCache, total_used_memory);
     // Upload buffers grown for one huge image (title 1's 341 MiB terrain layer pools) are freed
     // rather than kept for the rest of the session.
     for (auto* const scratch : {&swizzle_data_buffer, &unswizzle_data_buffer}) {

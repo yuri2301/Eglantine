@@ -132,4 +132,8 @@ private:
 };
 
 }  // namespace A64
+
+/// Host memory committed for translated code by every JIT alive, in bytes (Windows; else 0).
+std::size_t TotalCodeMemoryCommitted();
+
 }  // namespace Dynarmic

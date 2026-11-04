@@ -13,12 +13,37 @@
 #include "core/debugger/debugger.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "common/nx2_memory_stats.h"
+#include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/nx2_guest_profile.h"
+#include <dynarmic/interface/A64/a64.h>
 #include "core/hle/kernel/physical_core.h"
 #include "core/hle/kernel/svc.h"
 
 namespace Kernel {
+
+namespace {
+// The game's memory and the translated code, for the profiler's memory line (once a second).
+void UpdateMemoryStats(KernelCore& kernel) {
+    static std::atomic<u64> last{};
+    const u64 now = Nx2GuestProfile::Now();
+    u64 previous = last.load(std::memory_order_relaxed);
+    if (now - previous < 1'000'000'000ULL ||
+        !last.compare_exchange_strong(previous, now, std::memory_order_relaxed)) {
+        return;
+    }
+    namespace Memory = Common::Nx2Memory;
+    auto& manager = kernel.MemoryManager();
+    const size_t size = manager.GetSize(KMemoryManager::Pool::Application);
+    const size_t free = manager.GetFreeSize(KMemoryManager::Pool::Application);
+    Memory::Set(Memory::Stat::GameSize, size);
+    Memory::Set(Memory::Stat::GameUsed, size > free ? size - free : 0);
+#if defined(ARCHITECTURE_x86_64)
+    Memory::Set(Memory::Stat::JitCode, Dynarmic::TotalCodeMemoryCommitted());
+#endif
+}
+} // Anonymous namespace
 
 PhysicalCore::PhysicalCore(KernelCore& kernel, std::size_t core_index)
     : m_core_index{core_index}
@@ -163,6 +188,7 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
             if (Nx2GuestProfile::Enabled()) [[unlikely]] {
                 Nx2GuestProfile::AddSvc(m_core_index);
                 Nx2GuestProfile::MaybeReport();
+                UpdateMemoryStats(kernel);
             }
             // Perform call.
             Svc::Call(system, interface->GetSvcNumber());

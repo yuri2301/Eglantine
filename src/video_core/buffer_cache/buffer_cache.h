@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <memory>
+
+#include "common/nx2_memory_stats.h"
 #include <numeric>
 #include <stdexcept>
 #include <utility>
@@ -101,6 +103,7 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
 
 template <class P>
 void BufferCache<P>::TickFrame() {
+    Common::Nx2Memory::Set(Common::Nx2Memory::Stat::BufferCache, total_used_memory);
     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
     if (!channel_state) {
         return;

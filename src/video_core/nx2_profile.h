@@ -14,6 +14,7 @@
 #include "common/logging.h"
 #include "common/cpu_features.h"
 #include "common/memory_detect.h"
+#include "common/nx2_memory_stats.h"
 #include "common/settings.h"
 
 // EDEN_NX2_GPU_PROFILE: time where the GPU thread spends its time. Each zone counts its own
@@ -288,6 +289,32 @@ inline void Report(const char* thread_name = "GPU thread") {
                  static_cast<double>(usage.available_physical) / MiB,
                  static_cast<double>(usage.commit_used) / MiB,
                  static_cast<double>(usage.commit_limit) / MiB);
+        // Where the emulator's memory goes, and what the rest of the PC holds.
+        namespace Memory = Common::Nx2Memory;
+        const auto mib = [](u64 bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); };
+        const u64 total_physical = Common::GetMemInfo().TotalPhysicalMemory;
+        const u64 used_physical =
+            total_physical > usage.available_physical ? total_physical - usage.available_physical : 0;
+        const u64 rest = used_physical > usage.process_working_set
+                             ? used_physical - usage.process_working_set
+                             : 0;
+        LOG_INFO(HW_GPU,
+                 "Memory breakdown: game memory in use {:.0f} of {:.0f} MiB | translated game code "
+                 "{:.0f} MiB | GPU heaps (VRAM) {:.0f} MiB: textures {:.0f}, buffers {:.0f} | "
+                 "system RAM through Vulkan {:.0f} MiB: upload staging {:.0f}, download staging "
+                 "{:.0f}, stream buffer {:.0f} (device staging {:.0f}) | this process in RAM "
+                 "{:.0f} MiB | the rest of the PC in RAM {:.0f} MiB of {:.0f}",
+                 mib(Memory::Get(Memory::Stat::GameUsed)), mib(Memory::Get(Memory::Stat::GameSize)),
+                 mib(Memory::Get(Memory::Stat::JitCode)),
+                 mib(Memory::Get(Memory::Stat::VulkanDeviceHeaps)),
+                 mib(Memory::Get(Memory::Stat::TextureCache)),
+                 mib(Memory::Get(Memory::Stat::BufferCache)),
+                 mib(Memory::Get(Memory::Stat::VulkanHostHeaps)),
+                 mib(Memory::Get(Memory::Stat::StagingUpload)),
+                 mib(Memory::Get(Memory::Stat::StagingDownload)),
+                 mib(Memory::Get(Memory::Stat::StreamBuffer)),
+                 mib(Memory::Get(Memory::Stat::StagingDevice)), mib(usage.process_working_set),
+                 mib(rest), mib(total_physical));
     }
     data = {};
     data.window_start = now;
