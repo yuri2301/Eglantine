@@ -1,4 +1,5 @@
 name: release-binaries
+# yuri2301 fork: Windows builds for the i5-10400F / RTX 3060 profile.
 
 on:
   workflow_dispatch:
