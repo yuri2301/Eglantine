@@ -88,10 +88,29 @@ inline u64 Now() {
     return static_cast<u64>(Common::g_wall_clock.GetTimeNS().count());
 }
 
+/// Why the split's front waited for its back to run everything queued (GpuSplit::Drain).
+enum class DrainReason : u32 {
+    Other,
+    Sync,              ///< DmaPusher: a command list with the sync flag (fence after it)
+    GpuWrittenCommands,///< DmaPusher: command list words on pages the GPU has written
+    MacroDmaRead,      ///< Maxwell3D front: a macro's DMA read of guest memory
+    Semaphore,         ///< Puller: semaphore acquire/release, reads of the back's caches
+    Takeover,          ///< An engine's front state taken over from the back
+    RingFull,          ///< No room left in the ring: the back is behind
+    Count,
+};
+
+inline constexpr std::array<const char*, static_cast<size_t>(DrainReason::Count)> drain_names{
+    "other", "sync", "GPU-written commands", "macro DMA read", "semaphore", "takeover",
+    "ring full",
+};
+
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 8> counters{}; ///< See Counter
+    std::array<u64, static_cast<size_t>(DrainReason::Count)> drain_ns{};
+    std::array<u64, static_cast<size_t>(DrainReason::Count)> drain_count{};
+    std::array<u64, 10> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -141,6 +160,8 @@ enum class Counter : u32 {
     SameValueWrites, ///< Of MethodWrites: the register already held the value
     AcquireChecks,  ///< Semaphore acquires evaluated
     AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
+    CoalescedWords, ///< Split back: single writes merged into runs (constant buffer data)
+    CoalescedRuns,  ///< Split back: the runs they made
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -148,6 +169,21 @@ enum class Counter : u32 {
 inline std::unordered_set<u64>& DmaReadPages() {
     static std::unordered_set<u64> pages;
     return pages;
+}
+
+/// Counts a call of a zone without timing it: for zones entered millions of times a second
+/// (Method on the split's back: 3.4 million a second in title 1's heavy scenes), where two clock
+/// reads per call cost ~10% of that thread. Their time is part of "other".
+inline void CountOnly(Zone zone) {
+    if (Enabled()) {
+        ++t_data.count[static_cast<size_t>(zone)];
+    }
+}
+
+inline void AddDrain(DrainReason reason, u64 ns) {
+    auto& data = t_data;
+    data.drain_ns[static_cast<size_t>(reason)] += ns;
+    ++data.drain_count[static_cast<size_t>(reason)];
 }
 
 inline void Add(Counter counter, u64 amount) {
@@ -201,6 +237,23 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
+    if (data.counters[9] != 0) {
+        line += fmt::format(" | single writes merged {:.0f} into {:.0f} runs",
+                            static_cast<double>(data.counters[8]) * 1e9 / window,
+                            static_cast<double>(data.counters[9]) * 1e9 / window);
+    }
+    std::string drains;
+    for (size_t i = 0; i < data.drain_ns.size(); ++i) {
+        if (data.drain_count[i] == 0) {
+            continue;
+        }
+        drains += fmt::format(" | {} {:.1f} ms ({:.0f}/s)", drain_names[i],
+                              static_cast<double>(data.drain_ns[i]) * 1000.0 / window,
+                              static_cast<double>(data.drain_count[i]) * 1e9 / window);
+    }
+    if (!drains.empty()) {
+        line += " | waits for the back:" + drains;
+    }
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     if (std::string_view{thread_name} == "GPU thread") {
         // Host memory at the same moment, to tell the emulator's own growth from the host's.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <thread>
 
@@ -178,9 +179,14 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
     Publish();
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    const bool profiling = Nx2Profile::Enabled();
+    const u64 start = profiling ? Nx2Profile::Now() : 0;
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (write_position + words - consumed_cache <= RingWords) {
+            if (profiling) {
+                Nx2Profile::AddDrain(Nx2Profile::DrainReason::RingFull, Nx2Profile::Now() - start);
+            }
             return;
         }
         if (spins < 4096) {
@@ -204,17 +210,22 @@ void GpuSplit::Publish() {
     }
 }
 
-void GpuSplit::Drain() {
+void GpuSplit::Drain(Nx2Profile::DrainReason reason) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position) {
         return;
     }
     Publish();
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    const bool profiling = Nx2Profile::Enabled();
+    const u64 start = profiling ? Nx2Profile::Now() : 0;
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache == write_position) {
             publish_every = 8;
+            if (profiling) {
+                Nx2Profile::AddDrain(reason, Nx2Profile::Now() - start);
+            }
             return;
         }
         if (spins < 16384) {
@@ -279,13 +290,13 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 argument = static_cast<u32>(head >> 32);
         auto* const engine = back_engine;
         if ((head & Direct) != 0) {
-            Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
             engine->ConsumeSink(*system);
             engine->CallMethod(*system, method, argument, true);
         } else if (!engine->execution_mask[method]) {
             engine->method_sink.emplace_back(method, argument);
         } else {
-            Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
             engine->ConsumeSink(*system);
             if ((head & HasSegment) != 0) {
                 engine->current_dma_segment = entry[1];
@@ -299,7 +310,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 amount = static_cast<u32>(head >> 32);
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
         auto* const engine = back_engine;
-        Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+        Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
         engine->ConsumeSink(*system);
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
@@ -317,6 +328,53 @@ size_t GpuSplit::Execute(const u64* entry) {
     return 1;
 }
 
+size_t GpuSplit::ExecuteCoalesced(const u64* entry, size_t limit) {
+    constexpr size_t MaxRun = 1024;
+    const auto is_candidate = [this](u64 head) {
+        if (static_cast<Kind>(head & 0xf) != Kind::Method || (head & Direct) != 0) {
+            return false;
+        }
+        const u32 method = static_cast<u32>((head >> 8) & 0xffff);
+        return back_engine->coalesce_mask[method] && back_engine->execution_mask[method];
+    };
+    const auto entry_size = [](u64 head) -> size_t { return (head & HasSegment) != 0 ? 2 : 1; };
+    if (back_engine == nullptr || !is_candidate(entry[0])) {
+        return 0;
+    }
+    // Only a run of two or more is worth it; one write takes the normal path.
+    const size_t first_size = entry_size(entry[0]);
+    if (first_size >= limit || !is_candidate(entry[first_size])) {
+        return 0;
+    }
+    std::array<u32, MaxRun> words;
+    size_t count = 0;
+    size_t position = 0;
+    u64 segment = 0;
+    bool has_segment = false;
+    const u32 method = static_cast<u32>((entry[0] >> 8) & 0xffff);
+    while (position < limit && count < MaxRun && is_candidate(entry[position])) {
+        const u64 head = entry[position];
+        words[count++] = static_cast<u32>(head >> 32);
+        if ((head & HasSegment) != 0) {
+            segment = entry[position + 1];
+            has_segment = true;
+        }
+        position += entry_size(head);
+    }
+    Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
+    if (Nx2Profile::Enabled()) {
+        Nx2Profile::Add(Nx2Profile::Counter::CoalescedWords, count);
+        Nx2Profile::Add(Nx2Profile::Counter::CoalescedRuns, 1);
+    }
+    back_engine->ConsumeSink(*system);
+    if (has_segment) {
+        back_engine->current_dma_segment = segment;
+    }
+    back_engine->CallMultiMethod(*system, method, words.data(), static_cast<u32>(count),
+                                 static_cast<u32>(count));
+    return position;
+}
+
 void GpuSplit::BackLoop(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
@@ -329,6 +387,11 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
 #endif
     u64 read_position = 0;
+    // EDEN_NX2_SPLIT_COALESCE=0 runs every single write on its own (for A/B tests).
+    static const bool coalesce = [] {
+        const char* value = std::getenv("EDEN_NX2_SPLIT_COALESCE");
+        return value == nullptr || value[0] != '0';
+    }();
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread");
         u64 available = published.load(std::memory_order_acquire);
@@ -356,8 +419,15 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         g_back_busy.store(true, std::memory_order_relaxed);
         while (read_position != available) {
             const size_t index = read_position & RingMask;
-            const size_t size = Execute(&ring[index]);
-            read_position += size != 0 ? size : RingWords - index;
+            // Entries never wrap, so a run ends at the ring's end or at what was published.
+            const size_t limit = std::min<size_t>(available - read_position, RingWords - index);
+            if (const size_t merged = coalesce ? ExecuteCoalesced(&ring[index], limit) : 0;
+                merged != 0) {
+                read_position += merged;
+            } else {
+                const size_t size = Execute(&ring[index]);
+                read_position += size != 0 ? size : RingWords - index;
+            }
             // Hand ring space back now and then while working through a long batch.
             if (read_position - last_store >= 4096 && read_position != available) {
                 consumed.store(read_position, std::memory_order_release);

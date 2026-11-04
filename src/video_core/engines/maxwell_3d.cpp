@@ -48,6 +48,13 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
     execution_mask.reset();
     for (size_t i = 0; i < execution_mask.size(); i++)
         execution_mask[i] = IsMethodExecutable(u32(i));
+    // Constant buffer data: each word is appended at const_buffer.offset, and CallMultiMethod
+    // writes a run of them with one memory write (ProcessCBMultiData). Macros on the split's
+    // front send these one word at a time (title 1: ~40 words per draw, ~3 million a second).
+    coalesce_mask.reset();
+    for (u32 i = 0; i < 16; ++i) {
+        coalesce_mask[MAXWELL3D_REG_INDEX(const_buffer.buffer) + i] = true;
+    }
 }
 
 Maxwell3D::~Maxwell3D() = default;
@@ -885,7 +892,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
     if (!front) [[unlikely]] {
         // Copy the back's state and take the macros over while it is idle (state writes it
         // still holds in its method sink first).
-        split.Drain();
+        split.Drain(VideoCommon::Nx2Profile::DrainReason::Takeover);
         ConsumeSink(system);
         front = std::make_unique<FrontState>();
         std::memcpy(front->regs.data(), regs.reg_array.data(), sizeof(front->regs));
@@ -1134,7 +1141,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
                              u32 count) {
     // The words may be written by methods still queued for the back (indirect draw arguments
     // from a culling dispatch), and the caches that may hold newer ones belong to it.
-    split.Drain();
+    split.Drain(VideoCommon::Nx2Profile::DrainReason::MacroDmaRead);
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);

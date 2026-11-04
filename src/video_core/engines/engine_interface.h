@@ -44,6 +44,9 @@ public:
     }
 
     std::bitset<(std::numeric_limits<u16>::max)()> execution_mask{};
+    /// Methods whose consecutive single writes the GPU split's back may hand to CallMultiMethod
+    /// as one run (they append to a stream, like constant buffer data).
+    std::bitset<(std::numeric_limits<u16>::max)()> coalesce_mask{};
     std::vector<std::pair<u32, u32>> method_sink{};
     GPUVAddr current_dma_segment;
     bool current_dirty{};

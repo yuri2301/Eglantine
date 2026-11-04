@@ -11,6 +11,7 @@
 #include <type_traits>
 
 #include "common/common_types.h"
+#include "video_core/nx2_profile.h"
 
 namespace Core {
 class System;
@@ -98,7 +99,7 @@ public:
     /// Makes what was sent visible to the back.
     void Publish();
     /// Waits until the back executed everything sent so far.
-    void Drain();
+    void Drain(Nx2Profile::DrainReason reason = Nx2Profile::DrainReason::Other);
 
 private:
     enum class Kind : u64 {
@@ -148,6 +149,9 @@ private:
 
     void BackLoop(std::stop_token stop_token);
     size_t Execute(const u64* entry);
+    /// Executes a run of single writes to a coalescing method as one CallMultiMethod; returns
+    /// the words consumed, 0 if the entry does not start such a run. `limit`: words available.
+    size_t ExecuteCoalesced(const u64* entry, size_t limit);
 
     Core::System* system{};
     bool active{};

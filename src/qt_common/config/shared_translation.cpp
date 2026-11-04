@@ -395,8 +395,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "take CPU time from it less often.\nExperimental."));
     INSERT(Settings, nx2_gpu_profiler, tr("Log performance and memory every 10 seconds"),
            tr("Writes the GPU threads' time breakdown and the memory use of the emulator and of "
-              "Windows to the log every 10 s. Costs well under 1% of speed; needed for tuning "
-              "reports."));
+              "Windows to the log every 10 s, and why the GPU threads wait for each other. Costs a few "
+              "percent of speed on the GPU threads; turn it off when you are not sending logs."));
 
 #undef INSERT
 
