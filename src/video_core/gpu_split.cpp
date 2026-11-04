@@ -277,6 +277,14 @@ void GpuSplit::DeferFunction(std::function<void()>&& func) {
     });
 }
 
+void GpuSplit::ConsumeSinkTimed(Tegra::Engines::EngineInterface* engine) {
+    if (engine->method_sink.empty()) {
+        return;
+    }
+    Nx2Profile::Scope scope{Nx2Profile::Zone::MethodSink};
+    engine->ConsumeSink(*system);
+}
+
 size_t GpuSplit::Execute(const u64* entry) {
     const u64 head = entry[0];
     switch (static_cast<Kind>(head & 0xf)) {
@@ -297,13 +305,13 @@ size_t GpuSplit::Execute(const u64* entry) {
                 return 1;
             }
             Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
-            engine->ConsumeSink(*system);
+            ConsumeSinkTimed(engine);
             engine->CallMethod(*system, method, argument, true);
         } else if (!engine->execution_mask[method]) {
             engine->method_sink.emplace_back(method, argument);
         } else {
             Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
-            engine->ConsumeSink(*system);
+            ConsumeSinkTimed(engine);
             if ((head & HasSegment) != 0) {
                 engine->current_dma_segment = entry[1];
             }
@@ -317,7 +325,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
         auto* const engine = back_engine;
         Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
-        engine->ConsumeSink(*system);
+        ConsumeSinkTimed(engine);
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
         }
@@ -329,8 +337,9 @@ size_t GpuSplit::Execute(const u64* entry) {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);
         // State written before the call is applied first, as when the writes ran one by one.
         if (back_engine != nullptr) {
-            back_engine->ConsumeSink(*system);
+            ConsumeSinkTimed(back_engine);
         }
+        Nx2Profile::Scope scope{Nx2Profile::Zone::DeferredCall};
         reinterpret_cast<void (*)(const u64*)>(entry[1])(entry + 2);
         return 2 + payload;
     }
@@ -376,7 +385,7 @@ size_t GpuSplit::ExecuteCoalesced(const u64* entry, size_t limit) {
         Nx2Profile::Add(Nx2Profile::Counter::CoalescedWords, count);
         Nx2Profile::Add(Nx2Profile::Counter::CoalescedRuns, 1);
     }
-    back_engine->ConsumeSink(*system);
+    ConsumeSinkTimed(back_engine);
     if (has_segment) {
         back_engine->current_dma_segment = segment;
     }

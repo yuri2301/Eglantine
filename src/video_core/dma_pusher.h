@@ -193,6 +193,7 @@ public:
     /// then hands what it read to VerifyReadAhead.
     bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);
     void VerifyReadAhead(GPUVAddr address, std::span<const CommandHeader> commands);
+    void LogGpuWrittenList(GPUVAddr address, size_t size);
 
 private:
 

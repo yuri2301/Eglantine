@@ -393,6 +393,12 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, nx2_high_priority, tr("Run Eglantine at high priority"),
            tr("Raises the emulator's process priority while a game runs, so background programs "
               "take CPU time from it less often.\nExperimental."));
+    INSERT(Settings, nx2_read_ahead_gpu_commands,
+           tr("Read GPU-built command lists without waiting"),
+           tr("Some games (Mario Kart World) build command lists on the GPU every frame. With this "
+              "on, the emulator's two GPU threads wait for each other once per submission instead "
+              "of once per list.\nA list can then be one frame old now and then (an object may pop "
+              "in for a frame). Turn off if you see that."));
     INSERT(Settings, nx2_gpu_profiler, tr("Log performance and memory every 10 seconds"),
            tr("Writes the GPU threads' time breakdown and the memory use of the emulator and of "
               "Windows to the log every 10 s, and why the GPU threads wait for each other. Costs a few "

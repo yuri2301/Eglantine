@@ -151,11 +151,12 @@ private:
 
     std::optional<PendingAcquire> pending_acquire;
 
-    /// Releases this channel queued last (address, payload), to measure how many acquires they
-    /// already answer (Nx2Profile AcquirePredictable) before the front stops draining for them.
-    std::array<std::pair<GPUVAddr, u32>, 16> queued_releases{};
-    u32 queued_release_next{};
-    void NoteQueuedRelease(GPUVAddr address, u32 payload);
+    /// Records a release queued for the split's back (all channels share one table: they run
+    /// on the one GPU thread, and the back runs their work in the order queued).
+    static void NoteQueuedRelease(GPUVAddr address, u32 payload);
+    /// A "greater or equal" acquire that is met when the GPU gets to it: by a queued release, or
+    /// by the value already in memory (semaphore values only grow).
+    bool AcquireMetWithoutBack(DmaPusher& dma_pusher, GPUVAddr address, u32 value, u32 operation);
 
     /// Mapping of command subchannels to their bound engine ids
     std::array<EngineID, 8> bound_engines{};

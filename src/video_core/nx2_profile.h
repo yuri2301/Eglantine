@@ -54,6 +54,9 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    GpuWrittenFlush, ///< Downloading GPU-written command list words before reading them
+    MethodSink,   ///< Split back: state writes applied from the method sink (ConsumeSink)
+    DeferredCall, ///< Split back: work the front deferred to it (queries, fences, checks)
     Count,
 };
 
@@ -64,7 +67,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped", "method", "split drain", "split wait",
+    "fence skipped", "method", "split drain", "split wait", "GPU-written list download",
+    "method sink", "deferred calls",
 };
 
 // "Log performance and memory every 10 seconds" (nx2_gpu_profiler, on by default in this fork);
@@ -110,7 +114,7 @@ struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
     std::array<u64, static_cast<size_t>(DrainReason::Count)> drain_ns{};
     std::array<u64, static_cast<size_t>(DrainReason::Count)> drain_count{};
-    std::array<u64, 14> counters{}; ///< See Counter
+    std::array<u64, 15> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -166,6 +170,7 @@ enum class Counter : u32 {
     GpuWrittenSpeculated, ///< Split front: GPU-written command lists read without a drain
     GpuWrittenMismatches, ///< Split back: of those, words that differed once the back got there
     AcquireSkippedDrains, ///< Split front: acquires answered by queued releases (no drain)
+    GpuWrittenMismatchesDirty, ///< Of GpuWrittenMismatches: the host GPU still held newer words
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -244,10 +249,12 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[7]) * 1e9 / window,
                         static_cast<double>(data.counters[10]) * 1e9 / window);
     if (data.counters[11] != 0 || data.counters[12] != 0 || data.counters[13] != 0) {
-        line += fmt::format(" | GPU-written command lists read ahead {:.0f} ({:.0f} differed) | "
-                            "acquires answered without waiting {:.0f}",
+        line += fmt::format(" | GPU-written command lists read ahead {:.0f} ({:.0f} differed, "
+                            "{:.0f} of them still on the host GPU) | acquires answered without "
+                            "waiting {:.0f}",
                             static_cast<double>(data.counters[11]) * 1e9 / window,
                             static_cast<double>(data.counters[12]) * 1e9 / window,
+                            static_cast<double>(data.counters[14]) * 1e9 / window,
                             static_cast<double>(data.counters[13]) * 1e9 / window);
     }
     if (data.counters[9] != 0) {

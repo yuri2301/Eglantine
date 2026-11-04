@@ -484,14 +484,16 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
 }
 
 namespace {
-// Read-ahead of GPU-written command lists (below). EDEN_NX2_READ_AHEAD_GPU_COMMANDS=0 turns it
-// off; it also turns itself off once the back finds words that changed after the front read them.
-std::atomic<bool> g_read_ahead_off{[] {
-    const char* value = std::getenv("EDEN_NX2_READ_AHEAD_GPU_COMMANDS");
-    return value != nullptr && value[0] == '0';
-}()};
+// Read-ahead of GPU-written command lists (below): the Switch 2 Rig setting, or
+// EDEN_NX2_READ_AHEAD_GPU_COMMANDS=0/1.
+bool ReadAheadEnabled() {
+    static const int forced = [] {
+        const char* value = std::getenv("EDEN_NX2_READ_AHEAD_GPU_COMMANDS");
+        return value == nullptr ? -1 : (value[0] != '0' ? 1 : 0);
+    }();
+    return forced >= 0 ? forced == 1 : Settings::values.nx2_read_ahead_gpu_commands.GetValue();
+}
 std::atomic<u32> g_read_ahead_mismatches{};
-constexpr u32 ReadAheadMismatchLimit = 4;
 
 u64 HashCommandWords(const CommandHeader* words, size_t count) {
     u64 hash = 0xcbf29ce484222325ULL;
@@ -515,8 +517,7 @@ bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // one, one drain per submission makes them all current: the later ones in the submission are
     // read ahead, and the back checks, when it reaches each, that its words are what the front
     // read (if not, read-ahead turns itself off).
-    if (split.Active() && gpu_written_drained_serial == submission_serial &&
-        !g_read_ahead_off.load(std::memory_order_relaxed)) {
+    if (split.Active() && gpu_written_drained_serial == submission_serial && ReadAheadEnabled()) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::GpuWrittenSpeculated, 1);
         return true;
     }
@@ -525,9 +526,56 @@ bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     split.Drain(VideoCommon::Nx2Profile::DrainReason::GpuWrittenCommands);
     gpu_written_drained_serial = submission_serial;
     if (memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)) {
+        // Downloads the words from the host GPU (waits for it): timed apart from the drain.
+        VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::GpuWrittenFlush};
         memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);
     }
+    LogGpuWrittenList(address, size);
     return false;
+}
+
+void DmaPusher::LogGpuWrittenList(GPUVAddr address, size_t size) {
+    // What these lists hold (plain draw parameters could be read by the host GPU itself instead
+    // of through the CPU): the first 24 distinct ones, then one in 20,000.
+    static std::atomic<u32> logged{};
+    static std::atomic<u64> seen{};
+    static std::array<GPUVAddr, 24> logged_addresses{};
+    const u64 count = seen.fetch_add(1);
+    const u32 index = logged.load(std::memory_order_relaxed);
+    if (index < logged_addresses.size()) {
+        if (std::find(logged_addresses.begin(), logged_addresses.begin() + index, address) !=
+            logged_addresses.begin() + index) {
+            return;
+        }
+        logged_addresses[index] = address;
+        logged.store(index + 1, std::memory_order_relaxed);
+    } else if (count % 20000 != 0) {
+        return;
+    }
+    const size_t words = std::min<size_t>(size / sizeof(u32), 32);
+    std::array<u32, 32> data{};
+    memory_manager.ReadBlockUnsafe(address, data.data(), words * sizeof(u32));
+    std::string decoded;
+    for (size_t i = 0; i < words;) {
+        CommandHeader header{data[i]};
+        const auto mode = static_cast<u32>(header.mode.Value());
+        const u32 subchannel = header.subchannel;
+        const u32 engine = subchannel < subchannel_type.size()
+                               ? static_cast<u32>(subchannel_type[subchannel])
+                               : 0xff;
+        // Modes 1 (increasing), 3 (non-increasing), 5 (increase once) carry method_count words;
+        // 4 (inline) carries one value in the header.
+        const u32 carried = (mode == 1 || mode == 3 || mode == 5) ? header.method_count.Value() : 0;
+        decoded += fmt::format(" [mode {} sub {} (engine {}) method {:#x} count {}{}]", mode,
+                               subchannel, engine, header.method.Value(),
+                               mode == 4 ? 0 : header.method_count.Value(),
+                               mode == 4 ? fmt::format(" inline {:#x}", header.arg_count.Value())
+                                         : std::string{});
+        i += 1 + carried;
+    }
+    LOG_INFO(HW_GPU, "GPU-written command list {:#x} ({} words, #{}): {:08x} |{}", address,
+             size / sizeof(u32), count,
+             fmt::join(data.begin(), data.begin() + words, " "), decoded);
 }
 
 void DmaPusher::VerifyReadAhead(GPUVAddr address, std::span<const CommandHeader> commands) {
@@ -536,7 +584,9 @@ void DmaPusher::VerifyReadAhead(GPUVAddr address, std::span<const CommandHeader>
     VideoCommon::GpuSplit::Get().Defer([memory = &memory_manager, address, count, hash] {
         // What the front would have read had it drained here: everything before has run.
         const size_t bytes = count * sizeof(u32);
-        if (memory->IsMemoryDirty(address, bytes, VideoCommon::CacheType::BufferCache)) {
+        const bool dirty =
+            memory->IsMemoryDirty(address, bytes, VideoCommon::CacheType::BufferCache);
+        if (dirty) {
             memory->FlushRegion(address, bytes, VideoCommon::CacheType::BufferCache);
         }
         std::array<CommandHeader, 64> stack_words;
@@ -550,12 +600,19 @@ void DmaPusher::VerifyReadAhead(GPUVAddr address, std::span<const CommandHeader>
         if (HashCommandWords(words, count) == hash) {
             return;
         }
+        // Dirty: the host GPU wrote the words after the front read them (a dispatch between the
+        // two points). Not dirty: a download that finished meanwhile brought them (or the CPU).
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::GpuWrittenMismatches, 1);
+        if (dirty) {
+            VideoCommon::Nx2Profile::Add(
+                VideoCommon::Nx2Profile::Counter::GpuWrittenMismatchesDirty, 1);
+        }
         const u32 mismatches = g_read_ahead_mismatches.fetch_add(1) + 1;
-        LOG_WARNING(HW_GPU, "GPU-written command list {:#x} ({} words) changed after it was read "
-                    "ahead ({} of {})", address, count, mismatches, ReadAheadMismatchLimit);
-        if (mismatches >= ReadAheadMismatchLimit && !g_read_ahead_off.exchange(true)) {
-            LOG_WARNING(HW_GPU, "Reading GPU-written command lists ahead is off for this session");
+        if (mismatches <= 16) {
+            LOG_WARNING(HW_GPU, "GPU-written command list {:#x} ({} words) changed after it was "
+                        "read ahead ({}, the host GPU still {})",
+                        address, count, mismatches,
+                        dirty ? "held newer words" : "had none: a finished download brought them");
         }
     });
 }

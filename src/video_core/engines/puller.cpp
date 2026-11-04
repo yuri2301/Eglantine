@@ -74,18 +74,53 @@ bool Puller::PendingAcquire::Matches(u32 current) const {
     }
 }
 
+namespace {
+std::array<std::pair<GPUVAddr, u32>, 64> g_queued_releases{};
+u32 g_queued_release_next{};
+} // Anonymous namespace
+
 void Puller::NoteQueuedRelease(GPUVAddr address, u32 payload) {
-    for (auto& [queued_address, queued_payload] : queued_releases) {
+    for (auto& [queued_address, queued_payload] : g_queued_releases) {
         if (queued_address == address) {
             queued_payload = payload;
             return;
         }
     }
-    queued_releases[queued_release_next++ % queued_releases.size()] = {address, payload};
+    g_queued_releases[g_queued_release_next++ % g_queued_releases.size()] = {address, payload};
+}
+
+bool Puller::AcquireMetWithoutBack(DmaPusher& dma_pusher, GPUVAddr address, u32 value,
+                                   u32 operation) {
+    // EDEN_NX2_PREDICT_ACQUIRES=0 always waits for the back.
+    static const bool predict = [] {
+        const char* env = std::getenv("EDEN_NX2_PREDICT_ACQUIRES");
+        return env == nullptr || env[0] != '0';
+    }();
+    if (!predict || !VideoCommon::GpuSplit::Get().Active() ||
+        static_cast<GpuSemaphoreOperation>(operation) != GpuSemaphoreOperation::AcquireGequal) {
+        return false;
+    }
+    for (const auto& [queued_address, queued_payload] : g_queued_releases) {
+        if (queued_address == address && queued_payload >= value) {
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquirePredictable, 1);
+            return true;
+        }
+    }
+    // Guest memory as it is now (the back's queued writes only make it larger). A value still
+    // only in the host GPU's caches reads smaller here: then the back is asked as before.
+    if (dma_pusher.memory_manager.Read<u32>(address) >= value) {
+        return true;
+    }
+    return false;
 }
 
 bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire) {
+        return true;
+    }
+    if (AcquireMetWithoutBack(dma_pusher, pending_acquire->address, pending_acquire->value,
+                              pending_acquire->operation)) {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireSkippedDrains, 1);
         return true;
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
@@ -258,26 +293,12 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
-        // A release this channel queued earlier runs before this point on the back (one ring,
-        // in order). When it meets a "greater or equal" acquire (values only grow), the acquire
-        // is met when the GPU gets here: no need to wait for the back to read the word.
-        // EDEN_NX2_PREDICT_ACQUIRES=0 always waits.
-        static const bool predict = [] {
-            const char* value = std::getenv("EDEN_NX2_PREDICT_ACQUIRES");
-            return value == nullptr || value[0] != '0';
-        }();
-        for (const auto& [queued_address, queued_payload] : queued_releases) {
-            if (queued_address == acquire.address && acquire.Matches(queued_payload)) {
-                VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquirePredictable,
-                                             1);
-                if (predict && op == GpuSemaphoreOperation::AcquireGequal &&
-                    VideoCommon::GpuSplit::Get().Active()) {
-                    VideoCommon::Nx2Profile::Add(
-                        VideoCommon::Nx2Profile::Counter::AcquireSkippedDrains, 1);
-                    return;
-                }
-                break;
-            }
+        // A release queued earlier runs before this point on the back (one ring, in order): a
+        // "greater or equal" acquire it meets is met when the GPU gets here, with no need to wait
+        // for the back to read the word.
+        if (AcquireMetWithoutBack(dma_pusher, acquire.address, acquire.value, acquire.operation)) {
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireSkippedDrains, 1);
+            return;
         }
         DrainBack();
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
