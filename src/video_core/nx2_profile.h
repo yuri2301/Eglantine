@@ -101,12 +101,13 @@ enum class DrainReason : u32 {
     Semaphore,         ///< Puller: semaphore acquire/release, reads of the back's caches
     Takeover,          ///< An engine's front state taken over from the back
     RingFull,          ///< No room left in the ring: the back is behind
+    Writers,           ///< DmaPusher: only for the work that writes a GPU-built command list
     Count,
 };
 
 inline constexpr std::array<const char*, static_cast<size_t>(DrainReason::Count)> drain_names{
     "other", "sync", "GPU-written commands", "macro DMA read", "semaphore", "takeover",
-    "ring full",
+    "ring full", "writers of GPU-built lists",
 };
 
 struct ThreadData {
