@@ -53,7 +53,12 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - MKW's "GPU-written command lists" are 5-word continuations of a draw macro's parameters, filled by GPU culling: indexCount, instanceCount, firstIndex, vertexOffset, firstInstance — the layout of VkDrawIndexedIndirectCommand. instanceCount 0 means culled.
   - Example: `00000045 00000007 00000000 0000005c 00000002`.
 - The game's own CPU threads are not the limit (~40% busy).
-- MKW changes swap interval 1↔2 hundreds of times a minute in heavy scenes, which feels uneven. Upstream's `mkw_dynamic_fps` targets this; the user is testing it.
+- MKW changes swap interval 1↔2 hundreds of times a minute in heavy scenes, which feels uneven.
+- Upstream's `mkw_dynamic_fps`, tested on build 14 (docked, 38 min):
+  - Frames 30–57 ms (about 18–33 fps), never locked 60, and 3,379 swap-interval changes.
+  - The back thread stayed ~80% busy throughout, so the uncapped game simply saturates it.
+  - Worse than the default, where the game locks to a steady 30 or 60. Recommended: off. `mkw_30fps` is the option for steady pacing.
+  - Late in that session the game used 9.7 of 9.8 GB, translated code 760 MB, VRAM 8.6 GB.
 - The user describes an "artificial, pushed" feeling. Suspects: the 60/30 switching, and the extra frame of latency from `nx2_frames_ahead` / async presentation. A test with "Prepare the next frame..." off was suggested.
 - RAM: the game itself uses ~9.3 GB. On 16 GB, Windows compresses or pages part of it. The "rest of PC" figure (~11 GB) includes Windows' compressed pages.
 
