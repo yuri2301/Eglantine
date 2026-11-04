@@ -14,6 +14,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/nx2_guest_profile.h"
 #include "core/hle/kernel/physical_core.h"
 #include "core/hle/kernel/svc.h"
 
@@ -101,6 +102,11 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
                 if (True(hr & Core::HaltReason::StepThread)) {
                     thread->SetStepState(StepState::StepPerformed);
                 }
+            } else if (Nx2GuestProfile::Enabled()) [[unlikely]] {
+                const u64 start = Nx2GuestProfile::Now();
+                hr = interface->RunThread(thread);
+                Nx2GuestProfile::AddGuest(m_core_index, thread->GetThreadId(),
+                                          Nx2GuestProfile::Now() - start);
             } else {
                 hr = interface->RunThread(thread);
             }
@@ -154,6 +160,10 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
 
         // Handle system calls.
         if (supervisor_call) {
+            if (Nx2GuestProfile::Enabled()) [[unlikely]] {
+                Nx2GuestProfile::AddSvc(m_core_index);
+                Nx2GuestProfile::MaybeReport();
+            }
             // Perform call.
             Svc::Call(system, interface->GetSvcNumber());
             return;
@@ -239,8 +249,16 @@ void PhysicalCore::Idle() {
             std::this_thread::yield();
         }
     }
-    std::unique_lock lk{m_guard};
-    m_on_interrupt.wait(lk, [this] { return m_is_interrupted.load(); });
+    const bool profile = Nx2GuestProfile::Enabled();
+    const u64 start = profile ? Nx2GuestProfile::Now() : 0;
+    {
+        std::unique_lock lk{m_guard};
+        m_on_interrupt.wait(lk, [this] { return m_is_interrupted.load(); });
+    }
+    if (profile) [[unlikely]] {
+        Nx2GuestProfile::AddIdle(m_core_index, Nx2GuestProfile::Now() - start);
+        Nx2GuestProfile::MaybeReport();
+    }
 }
 
 bool PhysicalCore::IsInterrupted() const {

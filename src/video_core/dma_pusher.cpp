@@ -74,6 +74,7 @@ bool DmaPusher::Step() {
 
     if (prefetch_size == 0 && command_list_size == 0) {
         dma_pushbuffer.pop();
+        ++submission_serial;
         dma_pushbuffer_subindex = 0;
         return true;
     }
@@ -87,6 +88,7 @@ bool DmaPusher::Step() {
         }
         command_resume_offset = 0;
         dma_pushbuffer.pop();
+        ++submission_serial;
         return true;
     }
 
@@ -179,9 +181,13 @@ bool DmaPusher::Step() {
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
-            FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            const bool read_ahead =
+                FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            if (read_ahead) {
+                VerifyReadAhead(dma_state.dma_get, commands);
+            }
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -210,6 +216,7 @@ bool DmaPusher::Step() {
         }
         parked_methods.clear();
         dma_pushbuffer.pop();
+        ++submission_serial;
         dma_pushbuffer_subindex = 0;
     } else {
         signal_sync = command_list.command_lists[dma_pushbuffer_subindex].sync && Settings::values.sync_memory_operations.GetValue();
@@ -476,19 +483,81 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
     return false;
 }
 
-void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
+namespace {
+// Read-ahead of GPU-written command lists (below). EDEN_NX2_READ_AHEAD_GPU_COMMANDS=0 turns it
+// off; it also turns itself off once the back finds words that changed after the front read them.
+std::atomic<bool> g_read_ahead_off{[] {
+    const char* value = std::getenv("EDEN_NX2_READ_AHEAD_GPU_COMMANDS");
+    return value != nullptr && value[0] == '0';
+}()};
+std::atomic<u32> g_read_ahead_mismatches{};
+constexpr u32 ReadAheadMismatchLimit = 4;
+
+u64 HashCommandWords(const CommandHeader* words, size_t count) {
+    u64 hash = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < count; ++i) {
+        hash = (hash ^ words[i].argument) * 0x100000001b3ULL;
+    }
+    return hash;
+}
+} // Anonymous namespace
+
+bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // Title 1 runs small command lists its culling dispatches fill in each frame. Accurate GPU
     // mode reads every command list through the caches (safe reads); here only the ones on pages
     // the GPU has written are, or their draws run with an older frame's words (trees vanish).
     if (!IsGpuWrittenCommands(address, size)) {
-        return;
+        return false;
+    }
+    auto& split = VideoCommon::GpuSplit::Get();
+    // Title 1 reads ~700 such lists a frame; a drain for each one (18,000 a second) kept the
+    // split's two threads taking turns. When the dispatches that fill them run before the first
+    // one, one drain per submission makes them all current: the later ones in the submission are
+    // read ahead, and the back checks, when it reaches each, that its words are what the front
+    // read (if not, read-ahead turns itself off).
+    if (split.Active() && gpu_written_drained_serial == submission_serial &&
+        !g_read_ahead_off.load(std::memory_order_relaxed)) {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::GpuWrittenSpeculated, 1);
+        return true;
     }
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it).
-    VideoCommon::GpuSplit::Get().Drain(VideoCommon::Nx2Profile::DrainReason::GpuWrittenCommands);
+    split.Drain(VideoCommon::Nx2Profile::DrainReason::GpuWrittenCommands);
+    gpu_written_drained_serial = submission_serial;
     if (memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)) {
         memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);
     }
+    return false;
+}
+
+void DmaPusher::VerifyReadAhead(GPUVAddr address, std::span<const CommandHeader> commands) {
+    const u64 hash = HashCommandWords(commands.data(), commands.size());
+    const size_t count = commands.size();
+    VideoCommon::GpuSplit::Get().Defer([memory = &memory_manager, address, count, hash] {
+        // What the front would have read had it drained here: everything before has run.
+        const size_t bytes = count * sizeof(u32);
+        if (memory->IsMemoryDirty(address, bytes, VideoCommon::CacheType::BufferCache)) {
+            memory->FlushRegion(address, bytes, VideoCommon::CacheType::BufferCache);
+        }
+        std::array<CommandHeader, 64> stack_words;
+        std::vector<CommandHeader> heap_words;
+        CommandHeader* words = stack_words.data();
+        if (count > stack_words.size()) {
+            heap_words.resize(count);
+            words = heap_words.data();
+        }
+        memory->ReadBlockUnsafe(address, words, bytes);
+        if (HashCommandWords(words, count) == hash) {
+            return;
+        }
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::GpuWrittenMismatches, 1);
+        const u32 mismatches = g_read_ahead_mismatches.fetch_add(1) + 1;
+        LOG_WARNING(HW_GPU, "GPU-written command list {:#x} ({} words) changed after it was read "
+                    "ahead ({} of {})", address, count, mismatches, ReadAheadMismatchLimit);
+        if (mismatches >= ReadAheadMismatchLimit && !g_read_ahead_off.exchange(true)) {
+            LOG_WARNING(HW_GPU, "Reading GPU-written command lists ahead is off for this session");
+        }
+    });
 }
 
 void DmaPusher::ReportUnboundSubchannel() {

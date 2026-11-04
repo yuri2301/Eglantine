@@ -189,7 +189,10 @@ public:
     /// Whether the entry lies on device pages the GPU has written (NX2).
     bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
     /// Brings command list words the GPU wrote (still only in host buffers) to guest memory.
-    void FlushGpuWrittenCommands(GPUVAddr address, size_t size);
+    /// Returns true when the words are read ahead of the split's back (see the .cpp); the caller
+    /// then hands what it read to VerifyReadAhead.
+    bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);
+    void VerifyReadAhead(GPUVAddr address, std::span<const CommandHeader> commands);
 
 private:
 
@@ -198,6 +201,8 @@ public:
 
     std::queue<CommandList> dma_pushbuffer; ///< Queue of command lists to be processed
     std::size_t dma_pushbuffer_subindex{};  ///< Index within a command list within the pushbuffer
+    u64 submission_serial{};                ///< Command lists (submissions) done so far
+    u64 gpu_written_drained_serial{~u64{0}}; ///< Last submission that drained for its GPU-written words
 
     struct DmaState {
         u32 method;            ///< Current method

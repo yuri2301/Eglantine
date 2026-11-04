@@ -75,9 +75,6 @@ bool Puller::PendingAcquire::Matches(u32 current) const {
 }
 
 void Puller::NoteQueuedRelease(GPUVAddr address, u32 payload) {
-    if (!VideoCommon::Nx2Profile::Enabled()) {
-        return;
-    }
     for (auto& [queued_address, queued_payload] : queued_releases) {
         if (queued_address == address) {
             queued_payload = payload;
@@ -233,6 +230,9 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         const GPUVAddr mirror = g_nx2_ampere ? Nx2SemaphoreMirror(sequence_address) : 0;
         NoteQueuedRelease(sequence_address, payload);
         if (mirror != 0) {
+            NoteQueuedRelease(mirror, payload);
+        }
+        if (mirror != 0) {
             LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
         }
         OnBack([rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
@@ -258,13 +258,25 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
-        if (VideoCommon::Nx2Profile::Enabled()) {
-            for (const auto& [queued_address, queued_payload] : queued_releases) {
-                if (queued_address == acquire.address && acquire.Matches(queued_payload)) {
+        // A release this channel queued earlier runs before this point on the back (one ring,
+        // in order). When it meets a "greater or equal" acquire (values only grow), the acquire
+        // is met when the GPU gets here: no need to wait for the back to read the word.
+        // EDEN_NX2_PREDICT_ACQUIRES=0 always waits.
+        static const bool predict = [] {
+            const char* value = std::getenv("EDEN_NX2_PREDICT_ACQUIRES");
+            return value == nullptr || value[0] != '0';
+        }();
+        for (const auto& [queued_address, queued_payload] : queued_releases) {
+            if (queued_address == acquire.address && acquire.Matches(queued_payload)) {
+                VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquirePredictable,
+                                             1);
+                if (predict && op == GpuSemaphoreOperation::AcquireGequal &&
+                    VideoCommon::GpuSplit::Get().Active()) {
                     VideoCommon::Nx2Profile::Add(
-                        VideoCommon::Nx2Profile::Counter::AcquirePredictable, 1);
-                    break;
+                        VideoCommon::Nx2Profile::Counter::AcquireSkippedDrains, 1);
+                    return;
                 }
+                break;
             }
         }
         DrainBack();
@@ -356,22 +368,26 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
         return;
     }
     // Acquires: check once after flushing pending fences; never block the GPU thread on them.
-    DrainBack();
-    dma_pusher.rasterizer->ReleaseFences();
-    const u32 word = dma_pusher.memory_manager.Read<u32>(address);
-    const bool ready = operation == 0   ? word == payload
-                       : operation == 2 ? word >= payload
-                       : operation == 3 ? static_cast<s32>(word - payload) >= 0
-                       : operation == 4 ? (word & payload) != 0
-                       : operation == 5 ? (word & payload) == 0
-                                        : true;
-    if (!ready) {
-        static std::atomic<u32> reported{};
-        if (reported.fetch_add(1) < 8) {
-            LOG_WARNING(HW_GPU, "SEM_EXECUTE op {} at {:#x}: {:#x} vs {:#x} not met, continuing",
-                        operation, address, word, payload);
+    // The check only reports, so with the split it runs on the back, in order, instead of the
+    // front waiting for the back to get here.
+    OnBack([rasterizer = dma_pusher.rasterizer, memory = &dma_pusher.memory_manager, address,
+            payload, operation] {
+        rasterizer->ReleaseFences();
+        const u32 word = memory->Read<u32>(address);
+        const bool ready = operation == 0   ? word == payload
+                           : operation == 2 ? word >= payload
+                           : operation == 3 ? static_cast<s32>(word - payload) >= 0
+                           : operation == 4 ? (word & payload) != 0
+                           : operation == 5 ? (word & payload) == 0
+                                            : true;
+        if (!ready) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1) < 8) {
+                LOG_WARNING(HW_GPU, "SEM_EXECUTE op {} at {:#x}: {:#x} vs {:#x} not met, continuing",
+                            operation, address, word, payload);
+            }
         }
-    }
+    });
 }
 
 /// Calls a GPU puller method.
