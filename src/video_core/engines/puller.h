@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <utility>
 #include <vector>
 #include "common/bit_field.h"
 #include "common/common_funcs.h"
@@ -149,6 +150,12 @@ private:
     [[nodiscard]] bool ExecuteMethodOnEngine(DmaPusher& dma_pusher, u32 method);
 
     std::optional<PendingAcquire> pending_acquire;
+
+    /// Releases this channel queued last (address, payload), to measure how many acquires they
+    /// already answer (Nx2Profile AcquirePredictable) before the front stops draining for them.
+    std::array<std::pair<GPUVAddr, u32>, 16> queued_releases{};
+    u32 queued_release_next{};
+    void NoteQueuedRelease(GPUVAddr address, u32 payload);
 
     /// Mapping of command subchannels to their bound engine ids
     std::array<EngineID, 8> bound_engines{};

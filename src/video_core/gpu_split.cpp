@@ -290,6 +290,12 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 argument = static_cast<u32>(head >> 32);
         auto* const engine = back_engine;
         if ((head & Direct) != 0) {
+            // Macro writes (title 1: ~3 million a second, most of them plain state): those the
+            // engine lets sink are batched like command list writes instead of a CallMethod each.
+            if (engine->sink_macro_writes && !engine->execution_mask[method] && sink_macro_writes) {
+                engine->method_sink.emplace_back(method, argument);
+                return 1;
+            }
             Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
             engine->ConsumeSink(*system);
             engine->CallMethod(*system, method, argument, true);
@@ -321,6 +327,10 @@ size_t GpuSplit::Execute(const u64* entry) {
     }
     case Kind::Call: {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);
+        // State written before the call is applied first, as when the writes ran one by one.
+        if (back_engine != nullptr) {
+            back_engine->ConsumeSink(*system);
+        }
         reinterpret_cast<void (*)(const u64*)>(entry[1])(entry + 2);
         return 2 + payload;
     }

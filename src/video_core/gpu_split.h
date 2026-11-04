@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -152,6 +153,11 @@ private:
     /// Executes a run of single writes to a coalescing method as one CallMultiMethod; returns
     /// the words consumed, 0 if the entry does not start such a run. `limit`: words available.
     size_t ExecuteCoalesced(const u64* entry, size_t limit);
+    /// EDEN_NX2_SPLIT_SINK_MACRO=0 runs every macro write through CallMethod (A/B tests).
+    static inline const bool sink_macro_writes = [] {
+        const char* value = std::getenv("EDEN_NX2_SPLIT_SINK_MACRO");
+        return value == nullptr || value[0] != '0';
+    }();
 
     Core::System* system{};
     bool active{};

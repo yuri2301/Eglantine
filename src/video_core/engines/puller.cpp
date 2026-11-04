@@ -74,6 +74,19 @@ bool Puller::PendingAcquire::Matches(u32 current) const {
     }
 }
 
+void Puller::NoteQueuedRelease(GPUVAddr address, u32 payload) {
+    if (!VideoCommon::Nx2Profile::Enabled()) {
+        return;
+    }
+    for (auto& [queued_address, queued_payload] : queued_releases) {
+        if (queued_address == address) {
+            queued_payload = payload;
+            return;
+        }
+    }
+    queued_releases[queued_release_next++ % queued_releases.size()] = {address, payload};
+}
+
 bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire) {
         return true;
@@ -218,6 +231,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                                     ? VideoCommon::QueryPropertiesFlags::IsAFence
                                     : VideoCommon::QueryPropertiesFlags::HasTimeout;
         const GPUVAddr mirror = g_nx2_ampere ? Nx2SemaphoreMirror(sequence_address) : 0;
+        NoteQueuedRelease(sequence_address, payload);
         if (mirror != 0) {
             LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
         }
@@ -244,6 +258,15 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
+        if (VideoCommon::Nx2Profile::Enabled()) {
+            for (const auto& [queued_address, queued_payload] : queued_releases) {
+                if (queued_address == acquire.address && acquire.Matches(queued_payload)) {
+                    VideoCommon::Nx2Profile::Add(
+                        VideoCommon::Nx2Profile::Counter::AcquirePredictable, 1);
+                    break;
+                }
+            }
+        }
         DrainBack();
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
@@ -325,6 +348,7 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
     const u32 payload = regs.reg_array[0x19];
     const u32 operation = argument & 7;
     if (operation == 1) { // RELEASE
+        NoteQueuedRelease(address, payload);
         OnBack([rasterizer = dma_pusher.rasterizer, address, payload] {
             rasterizer->Query(address, VideoCommon::QueryType::Payload,
                               VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);

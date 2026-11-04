@@ -55,6 +55,10 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
     for (u32 i = 0; i < 16; ++i) {
         coalesce_mask[MAXWELL3D_REG_INDEX(const_buffer.buffer) + i] = true;
     }
+    // ConsumeSinkImpl applies a state write as CallMethod does (shadow RAM Track/Replay, the
+    // same-value skip, ProcessDirtyRegisters); the shadow RAM mode only changes through an
+    // executable method, which consumes the sink first.
+    sink_macro_writes = true;
 }
 
 Maxwell3D::~Maxwell3D() = default;

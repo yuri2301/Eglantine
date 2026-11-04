@@ -110,7 +110,7 @@ struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
     std::array<u64, static_cast<size_t>(DrainReason::Count)> drain_ns{};
     std::array<u64, static_cast<size_t>(DrainReason::Count)> drain_count{};
-    std::array<u64, 10> counters{}; ///< See Counter
+    std::array<u64, 11> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -162,6 +162,7 @@ enum class Counter : u32 {
     AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
     CoalescedWords, ///< Split back: single writes merged into runs (constant buffer data)
     CoalescedRuns,  ///< Split back: the runs they made
+    AcquirePredictable, ///< Of AcquireChecks: met by a release this channel queued (no drain needed)
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -234,9 +235,11 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | 3D register writes {:.0f} ({:.0f} same value)",
                         static_cast<double>(data.counters[4]) * 1e9 / window,
                         static_cast<double>(data.counters[5]) * 1e9 / window);
-    line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
+    line += fmt::format(" | acquires {:.0f} ({:.0f} waited, {:.0f} met by this channel's own "
+                        "queued releases)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
-                        static_cast<double>(data.counters[7]) * 1e9 / window);
+                        static_cast<double>(data.counters[7]) * 1e9 / window,
+                        static_cast<double>(data.counters[10]) * 1e9 / window);
     if (data.counters[9] != 0) {
         line += fmt::format(" | single writes merged {:.0f} into {:.0f} runs",
                             static_cast<double>(data.counters[8]) * 1e9 / window,
