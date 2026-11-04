@@ -5,6 +5,7 @@
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <chrono>
 #include <limits>
 #include <string>
@@ -617,6 +618,60 @@ void SetProcessHighPriority(bool high) {
     }
 #else
     (void)high;
+#endif
+}
+
+void SetProcessKeepInRam(bool keep) {
+#ifdef _WIN32
+    // On a 16 GB PC title 1 used ~9.3 GB of guest memory while host RAM sat at 95-97% and the
+    // working set was 4-6 GB of a 12-13 GB private commit: Windows paged out the game's memory
+    // instead of trimming other programs. A raised minimum working set makes this process the
+    // last one trimmed. The hard minimum stays disabled, so the memory manager can still take
+    // pages back under real pressure.
+    static SIZE_T original_min{};
+    static SIZE_T original_max{};
+    static bool raised{};
+    const HANDLE process = GetCurrentProcess();
+    if (!keep) {
+        if (raised && SetProcessWorkingSetSizeEx(process, original_min, original_max,
+                                                 QUOTA_LIMITS_HARDWS_MIN_DISABLE |
+                                                     QUOTA_LIMITS_HARDWS_MAX_DISABLE)) {
+            raised = false;
+            LOG_INFO(Common, "Working set minimum restored");
+        }
+        return;
+    }
+    if (raised) {
+        return;
+    }
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) {
+        return;
+    }
+    DWORD flags{};
+    GetProcessWorkingSetSizeEx(process, &original_min, &original_max, &flags);
+    constexpr u64 Reserve = 4ULL << 30;
+    const u64 total = status.ullTotalPhys;
+    if (total <= Reserve) {
+        return;
+    }
+    u64 wanted = (std::min)(total * 3 / 5, total - Reserve);
+    // The kernel refuses minimums it cannot guarantee (ERROR_NO_SYSTEM_RESOURCES): step down.
+    for (; wanted >= (1ULL << 30); wanted -= wanted / 8) {
+        if (SetProcessWorkingSetSizeEx(process, static_cast<SIZE_T>(wanted),
+                                       static_cast<SIZE_T>(total),
+                                       QUOTA_LIMITS_HARDWS_MIN_DISABLE |
+                                           QUOTA_LIMITS_HARDWS_MAX_DISABLE)) {
+            raised = true;
+            LOG_INFO(Common, "Working set minimum raised to {} MiB of {} MiB RAM", wanted >> 20,
+                     total >> 20);
+            return;
+        }
+    }
+    LOG_WARNING(Common, "Could not raise the working set minimum: {}", GetLastErrorMsg());
+#else
+    (void)keep;
 #endif
 }
 

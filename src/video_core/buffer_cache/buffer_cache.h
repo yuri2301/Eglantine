@@ -103,7 +103,7 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
 
 template <class P>
 void BufferCache<P>::TickFrame() {
-    Common::Nx2Memory::Set(Common::Nx2Memory::Stat::BufferCache, total_used_memory);
+    Common::Nx2Memory::Set(Common::Nx2Memory::Stat::BufferCache, buffer_bytes);
     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
     if (!channel_state) {
         return;

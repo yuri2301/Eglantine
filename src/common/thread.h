@@ -120,6 +120,10 @@ bool PinCurrentThreadToPhysicalCoreFromLast(u32 index_from_last);
 /// Raises (true) or restores (false) the process priority class. Windows only.
 void SetProcessHighPriority(bool high);
 
+/// Raises (or restores) the process's minimum working set so Windows trims other processes
+/// before this one. Soft: the hard minimum stays off.
+void SetProcessKeepInRam(bool keep);
+
 void RefreshThreadPolicies();
 void PollThreadPolicies();
 

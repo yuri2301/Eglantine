@@ -293,7 +293,7 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
-    Common::Nx2Memory::Set(Common::Nx2Memory::Stat::TextureCache, total_used_memory);
+    Common::Nx2Memory::Set(Common::Nx2Memory::Stat::TextureCache, image_bytes);
     // Upload buffers grown for one huge image (title 1's 341 MiB terrain layer pools) are freed
     // rather than kept for the rest of the session.
     for (auto* const scratch : {&swizzle_data_buffer, &unswizzle_data_buffer}) {
@@ -408,13 +408,13 @@ void TextureCache<P>::TickFrame() {
     static const bool log_tc = std::getenv("EDEN_NX2_TC_LOG") != nullptr;
     static u64 frames{};
     if (log_tc && ++frames % 600 == 0) {
-        u64 image_bytes{};
+        u64 listed_image_bytes{};
         size_t images{};
         std::vector<std::pair<u64, const Image*>> largest;
         std::map<u32, std::pair<u64, u32>> by_format;
         for (const auto [image_id, image] : slot_images) {
             const u64 bytes = GetScaledImageSizeBytes(*image);
-            image_bytes += bytes;
+            listed_image_bytes += bytes;
             ++images;
             if (debug_stats) {
                 largest.emplace_back(bytes, image);
@@ -425,7 +425,7 @@ void TextureCache<P>::TickFrame() {
         }
         LOG_INFO(HW_GPU, "Texture cache: device memory {} MiB (expected {} MiB, critical {} MiB), {} images {} MiB",
                  total_used_memory >> 20, expected_memory >> 20, critical_memory >> 20, images,
-                 image_bytes >> 20);
+                 listed_image_bytes >> 20);
         std::partial_sort(largest.begin(), largest.begin() + std::min<size_t>(12, largest.size()),
                           largest.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         for (size_t i = 0; i < std::min<size_t>(12, largest.size()); ++i) {
@@ -1878,6 +1878,7 @@ bool TextureCache<P>::BindSparseTiles(Image& image, std::span<const LevelRect> r
         // RegisterImage counts what an image has bound by then; later binds are added here.
         if (True(image.flags & ImageFlagBits::Registered)) {
             total_used_memory += ImageMemoryBytes(image) - bound_bytes;
+            image_bytes += ImageMemoryBytes(image) - bound_bytes;
         }
         return bound;
     } else {
@@ -1892,6 +1893,7 @@ bool TextureCache<P>::BackSparseTilesWhole(Image& image) {
         const bool backed = image.BackTilesWhole();
         if (True(image.flags & ImageFlagBits::Registered)) {
             total_used_memory += ImageMemoryBytes(image) - bound_bytes;
+            image_bytes += ImageMemoryBytes(image) - bound_bytes;
         }
         return backed;
     } else {
@@ -1957,6 +1959,7 @@ std::vector<u32> TextureCache<P>::BindSparseLayers(Image& image, std::span<const
         // RegisterImage counts what an image has bound by then; later binds are added here.
         if (True(image.flags & ImageFlagBits::Registered)) {
             total_used_memory += ImageMemoryBytes(image) - bound_bytes;
+            image_bytes += ImageMemoryBytes(image) - bound_bytes;
         }
         return bound;
     } else {
@@ -2436,6 +2439,7 @@ bool TextureCache<P>::ScaleUp(Image& image) {
     const bool rescaled = image.ScaleUp();
     if (!has_copy && image.HasScaled()) {
         total_used_memory += GetScaledImageSizeBytes(image);
+        image_bytes += GetScaledImageSizeBytes(image);
     }
     if (!rescaled) {
         return false;
@@ -3159,6 +3163,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
                "Trying to register an already registered image");
     image.flags |= ImageFlagBits::Registered;
     total_used_memory += ImageMemoryBytes(slot_images[image_id]);
+    image_bytes += ImageMemoryBytes(slot_images[image_id]);
     image.lru_index = lru_cache.Insert(image_id, frame_tick);
 
     ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, image_id](u64 page) {
@@ -3333,9 +3338,11 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     }
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
+        image_bytes -= (std::min)(image_bytes, GetScaledImageSizeBytes(image));
     }
     // TickFrame sets the total from the driver, which can be under the sum of these estimates.
     total_used_memory -= (std::min)(total_used_memory, ImageMemoryBytes(slot_images[image_id]));
+    image_bytes -= (std::min)(image_bytes, ImageMemoryBytes(slot_images[image_id]));
     const u64 freed_bytes = (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0) +
                             ImageMemoryBytes(slot_images[image_id]);
     const GPUVAddr gpu_addr = image.gpu_addr;

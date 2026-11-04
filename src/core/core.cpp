@@ -419,6 +419,7 @@ struct System::Impl {
         }
         Common::SetProcessHighPriority(switch2_program &&
                                        Settings::values.nx2_high_priority.GetValue());
+        Common::SetProcessKeepInRam(switch2_program && Settings::values.nx2_keep_in_ram.GetValue());
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz

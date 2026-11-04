@@ -413,6 +413,12 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, nx2_high_priority, tr("Run Eglantine at high priority"),
            tr("Raises the emulator's process priority while a game runs, so background programs "
               "take CPU time from it less often.\nExperimental."));
+    INSERT(Settings, nx2_keep_in_ram, tr("Keep the game in RAM"),
+           tr("Asks Windows to keep a large part of the emulator in memory (about 60% of the PC's "
+              "RAM, at most all but 4 GB), so it trims other programs first instead of paging "
+              "out the game's memory. A soft minimum: Windows can still take memory back when "
+              "the PC runs out.\nExperimental. Meant for 16 GB PCs, where Switch 2 games use "
+              "about 9 GB."));
     INSERT(Settings, nx2_read_ahead_gpu_commands,
            tr("Read GPU-built command lists without waiting"),
            tr("Some games (Mario Kart World) build command lists on the GPU every frame (its draw "

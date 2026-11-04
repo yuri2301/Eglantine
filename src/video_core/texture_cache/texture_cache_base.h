@@ -551,6 +551,7 @@ private:
     bool has_deleted_images = false;
     bool is_rescaling = false;
     u64 total_used_memory = 0;
+    u64 image_bytes = 0; ///< The images' own memory (total_used_memory may be the device's)
     u64 minimum_memory;
     u64 expected_memory;
     u64 critical_memory;

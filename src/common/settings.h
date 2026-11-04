@@ -664,6 +664,7 @@ struct Values {
                                                 Category::Nx2Rig};
     SwitchableSetting<bool> nx2_high_priority{linkage, false, "nx2_high_priority",
                                               Category::Nx2Rig};
+    SwitchableSetting<bool> nx2_keep_in_ram{linkage, false, "nx2_keep_in_ram", Category::Nx2Rig};
     SwitchableSetting<bool> nx2_read_ahead_gpu_commands{linkage, false,
                                                         "nx2_read_ahead_gpu_commands",
                                                         Category::Nx2Rig};
