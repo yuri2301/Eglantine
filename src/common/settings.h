@@ -646,6 +646,9 @@ struct Values {
 #endif
 
     // Switch 2 rig (this fork: RTX 3060 12 GB, i5-10400F 6C/12T, 16 GB RAM) //
+    // Pitoco mode (experimental): the paths tuned for this PC. Off runs Switch 2 games the way
+    // Eden and Eglantine do; the rig settings below apply only while it is on.
+    SwitchableSetting<bool> pitoco_mode{linkage, true, "pitoco_mode", Category::Nx2Rig};
     SwitchableSetting<bool> nx2_rig_profile{linkage, true, "nx2_rig_profile", Category::Nx2Rig};
     SwitchableSetting<bool> nx2_honor_cpu_clock{linkage, false, "nx2_honor_cpu_clock",
                                                 Category::Nx2Rig};

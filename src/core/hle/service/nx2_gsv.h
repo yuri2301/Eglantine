@@ -1740,7 +1740,10 @@ private:
         static const char* const frames_ahead_env = std::getenv("EDEN_NX2_FRAMES_AHEAD");
         const int frames_ahead = frames_ahead_env != nullptr
                                      ? (frames_ahead_env[0] == '1' ? 1 : 0)
-                                     : (Settings::values.nx2_frames_ahead.GetValue() ? 1 : -1);
+                                     : (Settings::values.pitoco_mode.GetValue() &&
+                                                Settings::values.nx2_frames_ahead.GetValue()
+                                            ? 1
+                                            : -1);
         const auto entered = std::chrono::steady_clock::now();
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",

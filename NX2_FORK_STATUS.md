@@ -1,4 +1,6 @@
-# yuri2301/Eglantine — nx2-experimental: status and handoff
+# Pitoco (formerly yuri2301/Eglantine nx2-experimental): status and handoff
+
+The project is now Pitoco (see [PITOCO.md](PITOCO.md)), on the `pitoco` branch.
 
 A fork of [Djihads80/Eglantine](https://github.com/Djihads80/Eglantine) (Switch 2 emulator, Eden/yuzu based), tuned for one PC:
 **Intel i5-10400F (Comet Lake, 6C/12T, AVX2/FMA/BMI2, no AVX-512) · RTX 3060 12 GB · 16 GB RAM · Windows 11.**

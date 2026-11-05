@@ -267,7 +267,7 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
         // it. The rest stays for buffers, render targets and other programs; the budget-following
         // thresholds (TickFrame) still collect before that.
         const u64 budget = runtime.GetDeviceMemoryBudget();
-        if (budget >= 10_GiB) {
+        if (budget >= 10_GiB && Settings::values.pitoco_mode.GetValue()) {
             const u64 share = std::clamp<u64>(Settings::values.nx2_texture_vram_share.GetValue(),
                                               50, 90);
             max_critical = (std::max)(max_critical, budget / 100 * share);

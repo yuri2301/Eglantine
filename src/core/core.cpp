@@ -376,7 +376,8 @@ struct System::Impl {
         // value differs from Eden's default; both are kept. The rig value is a per-game value of
         // this session only (RestoreGlobalState drops it). EDEN_NX2_KEEP_SETTINGS=1 skips it.
         static const bool keep_settings = std::getenv("EDEN_NX2_KEEP_SETTINGS") != nullptr;
-        if (switch2_program && !keep_settings && Settings::values.nx2_rig_profile.GetValue()) {
+        const bool pitoco_mode = switch2_program && Settings::values.pitoco_mode.GetValue();
+        if (pitoco_mode && !keep_settings && Settings::values.nx2_rig_profile.GetValue()) {
             const auto suggest = [](auto& setting, auto value, const char* name) {
                 if (!setting.UsingGlobal()) {
                     LOG_INFO(Core, "Rig profile: {} kept at the game's own {}", name,
@@ -418,9 +419,8 @@ struct System::Impl {
             // Presentation on its own thread, so the GPU thread does not wait for the swapchain.
             suggest(Settings::values.async_presentation, true, "async_presentation");
         }
-        Common::SetProcessHighPriority(switch2_program &&
-                                       Settings::values.nx2_high_priority.GetValue());
-        Common::SetProcessKeepInRam(switch2_program && Settings::values.nx2_keep_in_ram.GetValue());
+        Common::SetProcessHighPriority(pitoco_mode && Settings::values.nx2_high_priority.GetValue());
+        Common::SetProcessKeepInRam(pitoco_mode && Settings::values.nx2_keep_in_ram.GetValue());
         Common::Nx2Memory::Reset();
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant

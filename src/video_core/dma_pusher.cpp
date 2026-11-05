@@ -585,7 +585,9 @@ bool ReadAheadEnabled() {
         const char* value = std::getenv("EDEN_NX2_READ_AHEAD_GPU_COMMANDS");
         return value == nullptr ? -1 : (value[0] != '0' ? 1 : 0);
     }();
-    return forced >= 0 ? forced == 1 : Settings::values.nx2_read_ahead_gpu_commands.GetValue();
+    return forced >= 0 ? forced == 1
+                       : Settings::values.pitoco_mode.GetValue() &&
+                             Settings::values.nx2_read_ahead_gpu_commands.GetValue();
 }
 std::atomic<u32> g_read_ahead_mismatches{};
 

@@ -12,6 +12,7 @@ on:
     branches:
       - nx2
       - nx2-experimental
+      - pitoco
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
@@ -347,12 +348,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -x build/release/bin/eglantine
+          test -x build/release/bin/pitoco
           test -x build/release/bin/eden-cli
-          strip build/release/bin/eglantine build/release/bin/eden-cli
-          tar -czf "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
-            -C build/release/bin eglantine eden-cli
-          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
+          strip build/release/bin/pitoco build/release/bin/eden-cli
+          tar -czf "pitoco-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
+            -C build/release/bin pitoco eden-cli
+          ls -la "pitoco-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
 
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
       # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
@@ -362,7 +363,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -x build/release/bin/eglantine
+          test -x build/release/bin/pitoco
           test -x build/release/bin/eden-cli
           tools="$RUNNER_TEMP/linuxdeploy"
           mkdir -p "$tools"
@@ -372,9 +373,9 @@ jobs:
           curl -fsSL -o "$tools/linuxdeploy-plugin-qt-$arch.AppImage" \
           https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$arch.AppImage
           chmod +x "$tools"/*.AppImage
-          # The desktop file names its icon dev.eglantine.eglantine.
-          icon="$RUNNER_TEMP/dev.eglantine.eglantine.png"
-          cp dist/Eglantine.png "$icon"
+          # The desktop file names its icon dev.pitoco.pitoco.
+          icon="$RUNNER_TEMP/dev.pitoco.pitoco.png"
+          cp dist/Pitoco.png "$icon"
           export APPIMAGE_EXTRACT_AND_RUN=1
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
           # Include Wayland platform plugins and their graphics/shell integrations.
@@ -382,11 +383,11 @@ jobs:
           export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
           # Embedded in the AppImage metadata; matches the release tag (build-N) plus the commit.
           export LDAI_VERSION="build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
-          export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
+          export LDAI_OUTPUT="pitoco-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           export ARCH="$arch"
           "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
-            --executable build/release/bin/eglantine \
+            --executable build/release/bin/pitoco \
             --executable build/release/bin/eden-cli \
             --desktop-file dist/dev.eden_emu.eden.desktop \
             --icon-file "$icon" \
@@ -399,12 +400,12 @@ jobs:
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
         run: |
-          foreach ($exe in 'eglantine.exe', 'eden-cli.exe') {
+          foreach ($exe in 'pitoco.exe', 'eden-cli.exe') {
             if (-not (Test-Path "build/release/bin/$exe")) {
               throw "build/release/bin/$exe was not produced"
             }
           }
-          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          windeployqt --release --no-translations build/release/bin/pitoco.exe
 
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
       # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
@@ -416,10 +417,10 @@ jobs:
           set -euo pipefail
           export PATH="/ucrt64/bin:$PATH"
           cd build/release/bin
-          test -f eglantine.exe
+          test -f pitoco.exe
           test -f eden-cli.exe
           windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \
-            --no-system-dxc-compiler --no-system-d3d-compiler eglantine.exe
+            --no-system-dxc-compiler --no-system-d3d-compiler pitoco.exe
           deps() {
             objdump -p "$1" | awk '/DLL Name:/ {print $3}' | while read -r dll; do
               [ -z "$dll" ] && continue
@@ -435,7 +436,7 @@ jobs:
               fi
             done
           }
-          for exe in eglantine.exe eden-cli.exe; do
+          for exe in pitoco.exe eden-cli.exe; do
             deps "$exe"
           done
           find . -name '*.dll' | while read -r dll; do
@@ -450,8 +451,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app=build/release/bin/eglantine.app
-          test -x "$app/Contents/MacOS/eglantine"
+          app=build/release/bin/pitoco.app
+          test -x "$app/Contents/MacOS/pitoco"
           test -x build/release/bin/eden-cli
           cp build/release/bin/eden-cli "$app/Contents/MacOS/eden-cli"
           "$(brew --prefix qt@6)/bin/macdeployqt" "$app" \
@@ -468,7 +469,7 @@ jobs:
               done
           done
           # Libraries that load their dependencies through @rpath find them in the bundle.
-          for program in eglantine eden-cli; do
+          for program in pitoco eden-cli; do
             install_name_tool -add_rpath @executable_path/../Frameworks \
               "$app/Contents/MacOS/$program" 2> /dev/null
           done
@@ -491,15 +492,15 @@ jobs:
             codesign --force --sign - --entitlements dist/eglantine.entitlements "$app"
           fi
           codesign --verify --deep --strict "$app"
-          ditto -c -k --keepParent "$app" "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
-          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
-          # Also ship a .dmg (drag eglantine.app onto Applications).
+          ditto -c -k --keepParent "$app" "pitoco-${GITHUB_SHA}-${{ matrix.platform }}.zip"
+          ls -la "pitoco-${GITHUB_SHA}-${{ matrix.platform }}.zip"
+          # Also ship a .dmg (drag pitoco.app onto Applications).
           dmgdir=$(mktemp -d)
-          ditto "$app" "$dmgdir/eglantine.app"
+          ditto "$app" "$dmgdir/pitoco.app"
           ln -s /Applications "$dmgdir/Applications"
-          hdiutil create -volname "Eglantine" -srcfolder "$dmgdir" -ov -format UDZO \
-            "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
-          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
+          hdiutil create -volname "Pitoco" -srcfolder "$dmgdir" -ov -format UDZO \
+            "pitoco-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
+          ls -la "pitoco-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
 
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
@@ -507,7 +508,7 @@ jobs:
         if: matrix.platform == 'windows-x86_64'
         uses: actions/upload-artifact@v7
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          name: pitoco-${{ matrix.platform }}-${{ github.sha }}
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
@@ -516,7 +517,7 @@ jobs:
         if: matrix.mingw
         uses: actions/upload-artifact@v7
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          name: pitoco-${{ matrix.platform }}-${{ github.sha }}
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
@@ -526,10 +527,10 @@ jobs:
         if: startsWith(matrix.platform, 'linux')
         uses: actions/upload-artifact@v7
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          name: pitoco-${{ matrix.platform }}-${{ github.sha }}
           path: |
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.tar.gz
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.AppImage
+            pitoco-${{ github.sha }}-${{ matrix.platform }}.tar.gz
+            pitoco-${{ github.sha }}-${{ matrix.platform }}.AppImage
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -539,10 +540,10 @@ jobs:
         if: startsWith(matrix.platform, 'macos')
         uses: actions/upload-artifact@v7
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          name: pitoco-${{ matrix.platform }}-${{ github.sha }}
           path: |
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.zip
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.dmg
+            pitoco-${{ github.sha }}-${{ matrix.platform }}.zip
+            pitoco-${{ github.sha }}-${{ matrix.platform }}.dmg
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -561,7 +562,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v7
         with:
-          pattern: eglantine-*-${{ github.sha }}
+          pattern: pitoco-*-${{ github.sha }}
           path: artifacts
 
       - name: Package release files
@@ -607,30 +608,30 @@ jobs:
 
           | Build Type | Standard | PGO (Recommended) | Notes |
           | --- | --- | --- | --- |
-          | amd64 | [AppImage](${base}/eglantine-linux-x86_64.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64.tar.gz) | [AppImage](${base}/eglantine-linux-x86_64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64-pgo.tar.gz) | Make the AppImage executable (\`chmod +x\`) and run it |
-          | ARM (aarch64) | [AppImage](${base}/eglantine-linux-aarch64.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64.tar.gz) | [AppImage](${base}/eglantine-linux-aarch64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64-pgo.tar.gz) | |
+          | amd64 | [AppImage](${base}/pitoco-linux-x86_64.AppImage) · [tar.gz](${base}/pitoco-linux-x86_64.tar.gz) | [AppImage](${base}/pitoco-linux-x86_64-pgo.AppImage) · [tar.gz](${base}/pitoco-linux-x86_64-pgo.tar.gz) | Make the AppImage executable (\`chmod +x\`) and run it |
+          | ARM (aarch64) | [AppImage](${base}/pitoco-linux-aarch64.AppImage) · [tar.gz](${base}/pitoco-linux-aarch64.tar.gz) | [AppImage](${base}/pitoco-linux-aarch64-pgo.AppImage) · [tar.gz](${base}/pitoco-linux-aarch64-pgo.tar.gz) | |
 
           ## Windows
 
-          Windows packages are in-place zip files: extract and run \`eglantine.exe\`, or \`eden-cli.exe\` from a terminal.
+          Windows packages are in-place zip files: extract and run \`pitoco.exe\`, or \`eden-cli.exe\` from a terminal.
 
           | Build Type | Standard | PGO (Recommended) | Notes |
           | --- | --- | --- | --- |
-          | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/eglantine-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
-          | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/eglantine-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
+          | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/pitoco-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
+          | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/pitoco-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
 
           ## macOS
 
           | Build Type | Standard | PGO (Recommended) | Notes |
           | --- | --- | --- | --- |
-          | arm64 (Apple Silicon) | [zip](${base}/eglantine-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine eglantine.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
+          | arm64 (Apple Silicon) | [zip](${base}/pitoco-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine pitoco.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
 
-          The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eglantine's profile); prefer them when your CPU supports it.
+          The PGO builds are the same programs compiled with profile-guided optimization (clang plus Pitoco's profile); prefer them when your CPU supports it.
           EOF
 
           gh release create "${tag}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --prerelease \
-            --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            --title "Pitoco ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
             --notes-file notes.md

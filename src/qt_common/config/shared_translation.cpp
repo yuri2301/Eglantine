@@ -149,7 +149,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Runs a Switch 2 game's own DLSS (its upscaling network, translated for this GPU) "
               "instead of AMD FSR 3.1 in its place.\nAMD FSR 3.1 still draws while the network is "
               "checked, when it can't run on this GPU, with resolution scaling, and for the rest "
-              "of the session if its output fails Eglantine's checks.\nTakes effect when a game "
+              "of the session if its output fails Pitoco's checks.\nTakes effect when a game "
               "starts."));
     INSERT(Settings, fsr_sharpening_slider, tr("RCAS Sharpness:"),
            tr("Strength of RCAS (AMD's contrast-adaptive sharpening) on the upscaler used in place "
@@ -158,7 +158,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, nvidia_dlss, tr("Use NVIDIA DLSS in place of a game's DLSS"),
            tr("Uses NVIDIA DLSS on GeForce RTX cards in place of a Switch 2 game's own DLSS, "
               "instead of AMD FSR 3.1.\nNeeds NVIDIA's Streamline loader, and NVIDIA DLSS unless "
-              "the NVIDIA app has downloaded it; Eglantine does not ship NVIDIA's files. Use the "
+              "the NVIDIA app has downloaded it; Pitoco does not ship NVIDIA's files. Use the "
               "download button below.\nTakes effect when a game starts."));
     INSERT(Settings, anti_aliasing, tr("Anti-Aliasing Method:"),
            tr("The anti-aliasing method to use.\nSMAA offers the best quality.\nFXAA "
@@ -378,6 +378,11 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     // Ui Games list
 
     // Switch 2 rig (this fork)
+    INSERT(Settings, pitoco_mode, tr("Pitoco mode (experimental)"),
+           tr("Runs Switch 2 games on the paths tuned for this PC: the GPU work split over two "
+              "threads, frames prepared ahead, the rig profile and the other options on this "
+              "page. Off runs them the way Eden and Eglantine do, and those options have no "
+              "effect."));
     INSERT(Settings, nx2_rig_profile, tr("Apply the rig profile to Switch 2 games"),
            tr("When a Switch 2 game starts, settings you have not changed yourself take the values "
               "tuned for this PC (RTX 3060 12 GB, i5-10400F, 16 GB RAM): asynchronous shaders on, "
@@ -406,7 +411,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Pins the two GPU threads to the last two physical cores of the CPU, so Windows does "
               "not move them around or make them share a core with each other.\nExperimental: "
               "compare with it off."));
-    INSERT(Settings, nx2_high_priority, tr("Run Eglantine at high priority"),
+    INSERT(Settings, nx2_high_priority, tr("Run Pitoco at high priority"),
            tr("Raises the emulator's process priority while a game runs, so background programs "
               "take CPU time from it less often.\nExperimental."));
     INSERT(Settings, nx2_keep_in_ram, tr("Keep the game in RAM"),
