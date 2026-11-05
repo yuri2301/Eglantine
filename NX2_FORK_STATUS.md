@@ -90,6 +90,20 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - Smaller: 23 draws skipped for rejected programs (sign extend 4, scratch registers 2, opcode 0x243 and others); 8 matrix-multiply programs (the upscaler) replaced by the copy fallback.
 - PGO run (title screen, stopped at ~50 s): crash on close, a use-after-free in `Scheduler::SubmitExecution` from `~RasterizerVulkan` during `ShutdownMainProcess`. The split is already stopped there, so it's not the race. Non-critical.
 
+## MKW on 0.2.1 (MSVC, Parallel GPU execution on)
+- Grand Prix (774-939 s): 23-28 fps windows with 0-1 frames over 100 ms each and worst frames mostly under 225 ms (0.1.9's races: 1-12 per window). The user: "almost stable at 30 ... consistency for the first time". Open world: small gain.
+- **The back is no longer the limit.** Per-method breakdown (back thread, per second, including what each method runs): `draw.end` (3D 0x585) 334 ms for 82,000 calls (~32,000 draws, ~10 µs each); inline compute launches (method 0x107 on the two compute engines) 89 + 21 ms for 4,800 dispatches (14-28 µs each); inline uploads (0x6d) 55 ms for 270,000 words; inline constant buffer data (3D 0x8e4) 40 ms for 353,000 words. The back still waits ~265 ms a second for work.
+- **The front is**: idle only 41-75 ms a second, 275-305 ms of it waiting for the back: writers of GPU-built lists 241 ms (~4,400/s), macro DMA reads 173-193 ms (~370/s, ~0.5 ms each, a full drain each), semaphores ~100 ms.
+- In code (not built): a macro DMA read waits only for the queued compute and copy work (`WaitForWriters`), and drains fully only when the buffer cache holds a newer copy of the words. Assumes draws don't write what macros read back (true for the indirect arguments culling dispatches write); revert if MKW shows popping.
+
+## Guest pointers: shaders that read memory by address (Ocarina's 3D)
+0.2.1's log answered where Ocarina's untracked addresses come from: `CompositeExtractU32x2(LoadGlobal64(IAdd64(PackUint2x32(...), imm)), 0x0)` in vertex, fragment, compute and task/mesh programs. The program loads a 64-bit pointer from memory and reads through it, so no bound buffer can be known at translation time and the fallback reads zero.
+
+Design: shaders translate the guest GPU address themselves through a **guest address table** of device addresses into the buffer cache's own copies, which also stay correct when GPU work wrote the data (importing guest RAM into Vulkan would pin up to 14 GiB on a 16 GiB PC).
+- Table: root of 16,384 entries (one per 64 MiB of the 40-bit GPU address space) -> L2 tables of 16,384 entries (one per 4 KiB page) -> device address of that page in a buffer cache buffer, 0 when not resident (reads zero, as before).
+- **Phase 1 (in code, not built):** buffer device addresses kept whenever supported (`vulkan_device.cpp`), the root table (`BufferCacheRuntime::CreateGuestAddressTable`, host visible), its address in `Shader::Profile::guest_address_table`, and the SPIR-V fallback reading through it (`DefineGlobalMemoryFunctions`: PhysicalStorageBuffer64, `OpConvertUToPtr`, aligned loads). The table is empty, so nothing changes on screen yet; it proves the shader path compiles and runs.
+- **Phase 2:** fill it. A miss writes its page to a feedback buffer; after the frame's fence the host resolves each page (GPU VA -> device address -> a buffer cache buffer, created and uploaded if needed), writes the L2 entry, and keeps those regions synchronized before every draw or dispatch of a program that uses the table. Entries are cleared when the buffer cache deletes or merges a buffer and when the GPU range is unmapped. Writes through untracked pointers stay dropped until reads work.
+
 ## MKW on 0.1.9 (PGO, first clean A/B: no switches in effect)
 - Compatibility (51-436 s, more menu time): 25.7 fps mean, races 13-27 fps, 14 frames over 100 ms per 600 frames.
 - Parallel GPU execution (437-1960 s): 25.3 fps mean, races a steady 20-28 fps, 6 frames over 100 ms per 600 frames. The user: playable, compatibility unplayable; made the default and renamed (was "Pitoco mode", setting `parallel_gpu_execution`).

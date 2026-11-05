@@ -114,6 +114,11 @@ struct Profile {
     u64 min_ssbo_alignment{};
     u32 max_user_clip_distances{};
 
+    /// Device address of the guest address table (0: none). Global memory a program can't tie to
+    /// a bound storage buffer is read through it: guest GPU page -> device address of the buffer
+    /// cache's copy (two levels: 64 MiB regions, then 4 KiB pages; an empty entry reads zero).
+    u64 guest_address_table{};
+
     bool SupportsSubgroupStage(Stage stage) const {
         return (supported_subgroup_stages & (1u << static_cast<u32>(stage))) != 0;
     }

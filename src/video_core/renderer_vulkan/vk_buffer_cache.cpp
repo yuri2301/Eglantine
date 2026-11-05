@@ -386,6 +386,41 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
                                                                      scheduler_, staging_pool_);
     quad_strip_index_buffer = std::make_shared<QuadStripIndexBuffer>(device_, memory_allocator_,
                                                                      scheduler_, staging_pool_);
+    CreateGuestAddressTable();
+}
+
+void BufferCacheRuntime::CreateGuestAddressTable() {
+    // Root of the guest address table (Shader::Profile::guest_address_table): one entry per
+    // 64 MiB of the 40-bit guest GPU address space, each the device address of a 4 KiB-page
+    // table or zero. Host visible: the CPU writes entries, shaders read them by address.
+    if (!device.IsBufferDeviceAddressSupported() || !device.IsShaderInt64Supported()) {
+        LOG_INFO(Render_Vulkan, "Guest address table: unavailable (needs buffer device addresses "
+                                "and 64-bit integers in shaders)");
+        return;
+    }
+    constexpr VkDeviceSize RootSize = GuestAddressRootEntries * sizeof(u64);
+    const VkBufferCreateInfo buffer_ci{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = RootSize,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    };
+    guest_address_root = memory_allocator.CreateBuffer(buffer_ci, MemoryUsage::Upload);
+    const std::span<u8> mapped = guest_address_root.Mapped();
+    if (mapped.size() < RootSize) {
+        LOG_WARNING(Render_Vulkan, "Guest address table: root not host visible, unavailable");
+        guest_address_root = vk::Buffer{};
+        return;
+    }
+    std::memset(mapped.data(), 0, RootSize);
+    guest_address_root.Flush();
+    guest_address_root_address = device.GetLogical().GetBufferDeviceAddress(*guest_address_root);
+    LOG_INFO(Render_Vulkan, "Guest address table: root at device address {:#x} ({} entries)",
+             guest_address_root_address, GuestAddressRootEntries);
 }
 
 u32 BufferCacheRuntime::SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::Regs& regs,

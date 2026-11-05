@@ -1164,9 +1164,12 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
 
 void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                              u32 count) {
-    // The words may be written by methods still queued for the back (indirect draw arguments
-    // from a culling dispatch), and the caches that may hold newer ones belong to it.
-    split.Drain(VideoCommon::Nx2Profile::DrainReason::MacroDmaRead);
+    // The words may be written by work still queued for the back (indirect draw arguments from
+    // a culling dispatch). Only the compute and copy work queued so far must have run: it marks
+    // what it writes in the buffer cache. A newer copy there is downloaded with the back held
+    // (a full drain); otherwise guest memory is current and the draws queued after the last
+    // writer keep running. MKW's races: ~370 such reads a second, ~185 ms of full drains.
+    split.WaitForWriters(VideoCommon::Nx2Profile::DrainReason::MacroDmaRead);
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);
@@ -1175,6 +1178,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
     if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+        split.Drain(VideoCommon::Nx2Profile::DrainReason::MacroDmaRead);
         memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
     }
     for (u32 i = 0; i < words; ++i) {

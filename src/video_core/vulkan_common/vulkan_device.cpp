@@ -746,16 +746,10 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         RemoveExtensionFeature(extensions.descriptor_buffer, features.descriptor_buffer,
                                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
     }
-#ifdef EGLANTINE_STREAMLINE
-    // NVIDIA's DLSS needs buffer device addresses: keep the feature enabled for
-    // it, but leave Eglantine's own buffers as they are without descriptor buffers.
-    const bool dlss_wants_device_address =
-        streamline_extensions && features.buffer_device_address.bufferDeviceAddress;
-    if (!extensions.descriptor_buffer && dlss_wants_device_address) {
-        extensions.buffer_device_address = false;
-    } else
-#endif
-    if (!extensions.descriptor_buffer) {
+    // Buffer device addresses are kept whenever supported: the guest address table (shaders
+    // that read memory through 64-bit pointers loaded from memory, Ocarina of Time) points
+    // into the buffer cache's buffers by address. DLSS needs them too.
+    if (!features.buffer_device_address.bufferDeviceAddress) {
         RemoveExtensionFeature(extensions.buffer_device_address, features.buffer_device_address,
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }

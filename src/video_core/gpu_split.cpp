@@ -362,7 +362,7 @@ void GpuSplit::Drain(Nx2Profile::DrainReason reason) {
     }
 }
 
-bool GpuSplit::WaitForWriters() {
+bool GpuSplit::WaitForWriters(Nx2Profile::DrainReason reason) {
     const u64 target = std::min(last_writer_position, write_position);
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache >= target) {
@@ -376,7 +376,7 @@ bool GpuSplit::WaitForWriters() {
         if (consumed_cache >= target) {
             wait_target.store(~u64{0}, std::memory_order_relaxed);
             if (start != 0) {
-                Nx2Profile::AddDrain(Nx2Profile::DrainReason::Writers, Nx2Profile::Now() - start);
+                Nx2Profile::AddDrain(reason, Nx2Profile::Now() - start);
             }
             return true;
         }

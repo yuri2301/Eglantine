@@ -133,7 +133,7 @@ public:
     }
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
     /// Returns whether any of it was still queued.
-    bool WaitForWriters();
+    bool WaitForWriters(Nx2Profile::DrainReason reason = Nx2Profile::DrainReason::Writers);
 
 private:
     enum class Kind : u64 {
