@@ -14,6 +14,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -896,11 +897,19 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
+    // Only frame-sized images with the same aspect ratio, scaled up by at most 4x: a 4x4 lookup
+    // texture next to a 360x202 one is not a frame (Donkey Kong Bananza's purple screen).
     const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
                                  const std::optional<Texture::TICEntry>& to) {
-        return from && to && from->format == to->format && from->Address() != 0 &&
-               to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
-               to->IsBlockLinear();
+        if (!from || !to || from->format != to->format || from->Address() == 0 ||
+            to->Address() == 0 || !from->IsBlockLinear() || !to->IsBlockLinear())
+            return false;
+        const u64 fw = from->Width(), fh = from->Height(), tw = to->Width(), th = to->Height();
+        if (fw < 320 || fh < 180 || tw <= fw || th < fh || tw > fw * 4 || th > fh * 4)
+            return false;
+        const u64 cross_a = fw * th, cross_b = tw * fh;
+        const u64 difference = cross_a > cross_b ? cross_a - cross_b : cross_b - cross_a;
+        return difference * 20 <= (std::max)(cross_a, cross_b);
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
     bool fortunes_weave = false;
@@ -912,17 +921,44 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     if (!upscale_pair(input, output)) {
         input.reset();
         output.reset();
-        for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
-            const auto from = memory_manager.Read<u32>(cbuf_address + first) != 0 ? image(first)
-                                                                                    : std::nullopt;
-            for (u32 second = first + 4; from && second < 0x120; second += 4) {
-                if (memory_manager.Read<u32>(cbuf_address + second) == 0) continue;
-                const auto to = image(second);
-                if (upscale_pair(from, to)) {
+        // Every frame-sized handle in cbuf0+0x80..0x400; the pair with the largest output wins.
+        constexpr u32 ScanBegin = 0x80, ScanEnd = 0x400;
+        std::vector<std::pair<u32, Texture::TICEntry>> handles;
+        for (u32 offset = ScanBegin; offset < ScanEnd; offset += 4) {
+            if (!memory_manager.IsFullyMappedRange(cbuf_address + offset, 4)) break;
+            if (memory_manager.Read<u32>(cbuf_address + offset) == 0) continue;
+            if (const auto tic = image(offset);
+                tic && tic->Address() != 0 && tic->Width() >= 64 && tic->Height() >= 64) {
+                handles.emplace_back(offset, *tic);
+            }
+        }
+        u64 best_area = 0;
+        for (const auto& [from_offset, from] : handles) {
+            for (const auto& [to_offset, to] : handles) {
+                if (from_offset == to_offset || !upscale_pair(from, to)) continue;
+                const u64 area = u64{to.Width()} * to.Height();
+                if (area > best_area ||
+                    (area == best_area && u64{from.Width()} * from.Height() >
+                                              u64{input->Width()} * input->Height())) {
+                    best_area = area;
                     input = from;
                     output = to;
-                    break;
                 }
+            }
+        }
+        static std::unordered_set<GPUVAddr> listed;
+        if (listed.insert(regs.code_loc.Address()).second) {
+            for (const auto& [offset, tic] : handles) {
+                LOG_INFO(HW_GPU, "Upscale candidate for program {:#x}: cbuf0+{:#x} {:#x} {}x{} format {}{}",
+                         regs.code_loc.Address(), offset, tic.Address(), tic.Width(), tic.Height(),
+                         static_cast<u32>(tic.format.Value()),
+                         input && tic.Address() == input->Address()     ? " (input)"
+                         : output && tic.Address() == output->Address() ? " (output)"
+                                                                        : "");
+            }
+            if (!input) {
+                LOG_WARNING(HW_GPU, "No frame-sized upscale pair for program {:#x} ({} handles)",
+                            regs.code_loc.Address(), handles.size());
             }
         }
     }

@@ -331,13 +331,13 @@ size_t GpuSplit::Execute(const u64* entry) {
                 engine->method_sink.emplace_back(method, argument);
                 return 1;
             }
-            Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
+            Nx2Profile::SampledScope method_scope{Nx2Profile::Zone::Method};
             ConsumeSinkTimed(engine);
             engine->CallMethod(*system, method, argument, true);
         } else if (!engine->execution_mask[method]) {
             engine->method_sink.emplace_back(method, argument);
         } else {
-            Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
+            Nx2Profile::SampledScope method_scope{Nx2Profile::Zone::Method};
             ConsumeSinkTimed(engine);
             if ((head & HasSegment) != 0) {
                 engine->current_dma_segment = entry[1];
@@ -351,7 +351,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 amount = static_cast<u32>(head >> 32);
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
         auto* const engine = back_engine;
-        Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
+        Nx2Profile::SampledScope method_scope{Nx2Profile::Zone::Method};
         ConsumeSinkTimed(engine);
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
@@ -407,7 +407,7 @@ size_t GpuSplit::ExecuteCoalesced(const u64* entry, size_t limit) {
         }
         position += entry_size(head);
     }
-    Nx2Profile::CountOnly(Nx2Profile::Zone::Method);
+    Nx2Profile::SampledScope method_scope{Nx2Profile::Zone::Method};
     if (Nx2Profile::Enabled()) {
         Nx2Profile::Add(Nx2Profile::Counter::CoalescedWords, count);
         Nx2Profile::Add(Nx2Profile::Counter::CoalescedRuns, 1);

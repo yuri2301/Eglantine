@@ -12,6 +12,7 @@
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
 #include "common/logging.h"
+#include "common/nx2_memory_stats.h"
 #include "common/adpf.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -420,6 +421,7 @@ struct System::Impl {
         Common::SetProcessHighPriority(switch2_program &&
                                        Settings::values.nx2_high_priority.GetValue());
         Common::SetProcessKeepInRam(switch2_program && Settings::values.nx2_keep_in_ram.GetValue());
+        Common::Nx2Memory::Reset();
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz

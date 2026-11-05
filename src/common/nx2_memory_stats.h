@@ -34,6 +34,13 @@ inline void Set(Stat stat, u64 bytes) {
     g_stats[static_cast<size_t>(stat)].store(bytes, std::memory_order_relaxed);
 }
 
+/// At each game's start: the last game's figures would stand until the new one sets its own.
+inline void Reset() {
+    for (auto& stat : g_stats) {
+        stat.store(0, std::memory_order_relaxed);
+    }
+}
+
 [[nodiscard]] inline u64 Get(Stat stat) {
     return g_stats[static_cast<size_t>(stat)].load(std::memory_order_relaxed);
 }

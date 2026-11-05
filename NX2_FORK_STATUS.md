@@ -45,7 +45,8 @@ Last updated: 2026-11-04, after build 14.
 | 12 | Merged upstream nx2 + nx2-experimental: ReadGpuWrittenCommands/WaitForWriters, per-draw cuts, MKW 30 FPS + dynamic FPS options, eglantine.profdata | — |
 | 13 | Read-ahead **off** by default | — |
 | 14 | Memory breakdown line (dynarmic counts committed code memory) | **Long stretches locked 60 fps, stretches locked 30 (game's choice, back ~81% busy), heavy free roam 20–40 ms.** Game memory 9.3 of 9.8 GB; emulator's own RAM extras < 1 GB; VRAM 5.8 GB; process RAM 4.3 GB (Windows pushed the rest out) |
-| 15 | Memory line: textures/buffers report the caches' own bytes; Rig option "Keep the game in RAM" (`nx2_keep_in_ram`, off): soft minimum working set of 60% of RAM, at most all but 4 GB (9.7 GB on this PC) | — (not tested yet) |
+| 15 | Memory line: textures/buffers report the caches' own bytes; Rig option "Keep the game in RAM" (`nx2_keep_in_ram`, off): soft minimum working set of 60% of RAM, at most all but 4 GB (9.7 GB on this PC) | 3 MKW sessions (dynamic FPS on, sync core speed on): frames 28–55 ms, far fewer 100 ms hitches (0–2 per 600 frames, was 3–7). P-switch: draws fell from ~60k/s to 3–6k/s and fps hit target at once. Kart slower than the map at times. DKB: purple screen (wrong upscale pair). Host RAM still 95–99% |
+| 16 | DKB: the upscale fallback takes only frame-sized pairs (same aspect, ≥320x180, ≤4x) and the largest output, scans cbuf0+0x80..0x400 and logs the candidates once per program; the back thread's method calls timed (1 in 32) so "other" shrinks to what is really unzoned; memory line reset at each game; graphics pipelines evicted after 18,000 unused frames (was 9,000) and the log counts evicted ones built again | — (not tested yet) |
 
 Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps average, ~11 hitches per 600 frames. Ours (build 10): ~31 fps average, ~2 hitches per 600 frames.
 
@@ -78,13 +79,13 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
   - `EDEN_NX2_KEEP_SETTINGS`
 
 ## Next steps, in order
-1. **Build 15 (done, not tested):** memory line split fixed; "Keep the game in RAM" added. Test it with a heavy MKW session: compare "this process in RAM", "host RAM % used" and the 100 ms hitches with it on and off.
+1. **Build 16 (done, not tested):** DKB with the new upscale fallback (send the log: the "Upscale candidate" lines show which images it saw); in MKW, read the back thread's "method" time and what is left in "other", and the "built again" count in the eviction lines.
 2. **GPU reads the draw lists directly:** when a draw macro's parameters come from a GPU-written GP entry in the indirect-draw layout above, issue `vkCmdDrawIndexedIndirect` from the buffer cache's buffer on the back. No CPU readback, no drain, no stale lists. Make it generic (pattern based), not MKW-only.
 3. **Native GPU macros:** recognise NVN's common Turing MME macros by code hash and run native C++ instead of the macro JIT on the front (~1.1M macro calls/s). Generic for every game on the same NVN version.
 4. **Spread the back's draw preparation** across spare cores (read handles, image views, buffer updates, stage-buffer binds ≈ 230 ms/s), or use device-generated commands (VK_EXT_device_generated_commands) for groups of draws.
 5. **Memory:** commit the 12+2 GiB guest block on touch instead of `SEC_COMMIT` up front (`src/common/host_memory.cpp`), to cut Windows' commit charge.
 6. **Study:** find the NVN library in MKW's main executable (RE workspace had `main.img` and scripts) and count the NVN functions called per frame, to size a graphics wrapper.
-7. DKB: investigate the purple screen and crash when the user sends a DKB log (executable notes below).
+7. DKB: if the fallback still shows nothing, try `EDEN_NX2_TENSOR=1` (emulates the game's own tensor upscale; its first compile takes minutes).
 
 ## Log of the build 14 dynamic-FPS session (2,330 s, docked)
 - 93 frame reports: 28–57 ms, never a locked 60; 231 frames over 100 ms (3 single frames over 1 s, near 151 s, 635 s and 1952 s).
@@ -92,6 +93,14 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - **Pipeline builds:** 4,358 runtime pipelines, 18.4 s on the GPU thread in total; up to 321 in 10 s (1.7 s). The disk shader cache is on, so they should drop on later runs of the same tracks.
 - **RAM:** host RAM averaged 95% used (max 97%), working set 6–6.6 GB of a 12–13 GB private commit, commit charge 46/49 GB. Windows was paging the game: the case `nx2_keep_in_ram` is for.
 - User settings in that session: `mkw_dynamic_fps` on (recommended off), DLSS on, high priority on, frame pacing switched between 60/90/120.
+
+## Log of the build 15 sessions (MKW x3, then DKB)
+- **P-switch (1342–1372 s):** draws fell from ~55–63k/s to 2.5–6k/s and the back thread went 65–90% idle: fps follows the game's draw count at ~13 µs per draw. Removing draws the game wants is not an option; making each draw cheaper (steps 2–4) is.
+- **Kart slower than the map:** MKW steps its physics once per frame. Frames slower than the mode the game picked slow the kart while timer-driven parts keep pace; `mkw_dynamic_fps` makes it worse by pacing at interval 1 while the game keeps switching. Recommended: `mkw_dynamic_fps` off (or `mkw_30fps`), sync core speed off, fast GPU time default.
+- **Heavy racing, back thread (1403 s):** "other" 267 ms/s unzoned (1.66M method calls/s were only counted, not timed), bind stage buffers 96, update buffers 75, flush work 56, fill image views 45, read handles 40, pipeline lookup 38, method sink 38; 8,704 buffer downloads/s (9 MB/s).
+- **Pipelines:** 600 evicted at once after 9,000 frames at 1403 s, then 6–181 every ~25 s.
+- **DKB:** gameplay-level work (~25k draws/s) behind a purple screen. The game's tensor (HMMA) upscale program 0x2116149400 was refused and the fallback blitted a 4x4 image into a 360x202 one, so the real output was never written.
+- The memory line kept the previous game's figures until the new one drew its first frame (fixed in build 16).
 
 ## DKB main executable (base/exefs/main, build id a1dd7480bca7b6e8...)
 - 25.5 MiB code, 5.9 MiB rodata, 2.8 MiB data (MKW: 40.2 / 8.5 / 2.9). Internal name SilverStar, CSPGO build, platform "Ounce".

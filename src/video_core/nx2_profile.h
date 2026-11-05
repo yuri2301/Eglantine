@@ -118,6 +118,7 @@ struct ThreadData {
     std::array<u64, static_cast<size_t>(DrainReason::Count)> drain_count{};
     std::array<u64, 15> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
+    u32 sample_tick{}; ///< SampledScope's call counter
     u64 window_start{};
 };
 
@@ -182,14 +183,47 @@ inline std::unordered_set<u64>& DmaReadPages() {
     return pages;
 }
 
-/// Counts a call of a zone without timing it: for zones entered millions of times a second
-/// (Method on the split's back: 3.4 million a second in title 1's heavy scenes), where two clock
-/// reads per call cost ~10% of that thread. Their time is part of "other".
-inline void CountOnly(Zone zone) {
-    if (Enabled()) {
-        ++t_data.count[static_cast<size_t>(zone)];
+/// Counts every call of a zone entered millions of times a second (Method on the split's back:
+/// 3.4 million a second in title 1's heavy scenes, where two clock reads per call cost ~10% of
+/// that thread) but times only one call in Period, counted Period times.
+class SampledScope {
+public:
+    static constexpr u32 Period = 32;
+
+    explicit SampledScope(Zone zone_) : index{static_cast<size_t>(zone_)} {
+        if (!Enabled()) {
+            return;
+        }
+        auto& data = t_data;
+        ++data.count[index];
+        if (++data.sample_tick % Period != 0) {
+            return;
+        }
+        timed = true;
+        parent_child_ns = data.child_ns;
+        data.child_ns = 0;
+        start = Now();
     }
-}
+
+    ~SampledScope() {
+        if (!timed) {
+            return;
+        }
+        const u64 elapsed = Now() - start;
+        auto& data = t_data;
+        data.exclusive_ns[index] += (elapsed - data.child_ns) * Period;
+        data.child_ns = parent_child_ns + elapsed;
+    }
+
+    SampledScope(const SampledScope&) = delete;
+    SampledScope& operator=(const SampledScope&) = delete;
+
+private:
+    size_t index;
+    bool timed{};
+    u64 start{};
+    u64 parent_child_ns{};
+};
 
 inline void AddDrain(DrainReason reason, u64 ns) {
     auto& data = t_data;

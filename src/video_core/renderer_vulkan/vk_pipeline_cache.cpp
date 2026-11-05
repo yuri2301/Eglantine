@@ -1000,6 +1000,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     auto& pipeline{pair->second};
     if (is_new) {
         ReportNewPipelineKey(graphics_key);
+        rebuilt_after_eviction += used_and_evicted.contains(graphics_key.Hash()) ? 1 : 0;
         pipeline = CreateGraphicsPipeline();
     }
     if (!pipeline) {
@@ -1037,7 +1038,9 @@ void PipelineCache::EvictUnusedPipelines() {
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
     // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
-    constexpr u64 EvictAfterFrames = 9000;
+    // Title 1 evicted 600 at once after 9000 frames (~5 min at 30 fps) and built them again on
+    // returning to a course; twice that keeps a race's set across a few races.
+    constexpr u64 EvictAfterFrames = 18000;
     if (frame_count <= EvictAfterFrames) {
         return;
     }
@@ -1066,8 +1069,11 @@ void PipelineCache::EvictUnusedPipelines() {
             pipeline->ClearTransitions();
         }
     }
-    LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
-             EvictAfterFrames, graphics_cache.size());
+    LOG_INFO(Render_Vulkan,
+             "Evicted {} graphics pipelines unused for {} frames, {} left ({} evicted ones built "
+             "again since the last eviction)",
+             evicted, EvictAfterFrames, graphics_cache.size(), rebuilt_after_eviction);
+    rebuilt_after_eviction = 0;
 }
 
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
