@@ -26,6 +26,7 @@ struct MemoryUsage {
     u64 commit_used{};         ///< Host commit charge (RAM plus page file in use)
     u64 commit_limit{};        ///< Host commit limit
     u32 physical_load_percent{};
+    u64 page_faults{};         ///< Page faults of the process so far (soft and hard)
 };
 
 [[nodiscard]] MemoryUsage GetMemoryUsage();

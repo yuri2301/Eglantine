@@ -134,6 +134,8 @@ void GpuSplit::Stop() {
     wake.notify_one();
     back_thread.join();
     active = false;
+    holds_back = false;
+    front_holds.store(false, std::memory_order_relaxed);
     // The split is static and outlives the emulation session. The next session's back thread
     // starts reading at 0: with the old positions kept it skipped through the new, empty ring a
     // wrap at a time and never reached the old write position (the next game's first GPU work
@@ -190,10 +192,44 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
 }
 
+void GpuSplit::HoldBack() {
+    if (holds_back || !active) {
+        return;
+    }
+    // Pitoco 2 crashed in QueryCacheRuntime::Barriers: the front recorded fence work after a
+    // drain while the back's idle hook submitted (and replaced) the same command buffer.
+    front_holds.store(true, std::memory_order_seq_cst);
+    while (hook_running.load(std::memory_order_seq_cst)) {
+        Pause();
+    }
+    holds_back = true;
+    // The back skips its hook while held: submit what it deferred here.
+    if (idle_hook != nullptr) {
+        idle_hook(idle_argument);
+    }
+}
+
+void GpuSplit::ReleaseBack() {
+    if (!holds_back) {
+        return;
+    }
+    holds_back = false;
+    front_holds.store(false, std::memory_order_release);
+}
+
+void GpuSplit::RunIdleHook() {
+    hook_running.store(true, std::memory_order_seq_cst);
+    if (!front_holds.load(std::memory_order_seq_cst)) {
+        idle_hook(idle_argument);
+    }
+    hook_running.store(false, std::memory_order_release);
+}
+
 void GpuSplit::Publish() {
     if (published_local == write_position) {
         return;
     }
+    ReleaseBack();
     published_local = write_position;
     publish_every = std::min<size_t>(publish_every * 2, PublishEvery);
     published.store(write_position, std::memory_order_seq_cst);
@@ -206,6 +242,7 @@ void GpuSplit::Publish() {
 void GpuSplit::Drain(Nx2Profile::DrainReason reason) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position) {
+        HoldBack();
         return;
     }
     Publish();
@@ -216,6 +253,7 @@ void GpuSplit::Drain(Nx2Profile::DrainReason reason) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache == write_position) {
             publish_every = 8;
+            HoldBack();
             if (profiling) {
                 Nx2Profile::AddDrain(reason, Nx2Profile::Now() - start);
             }
@@ -446,7 +484,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             }
             if (available == read_position && idle_hook != nullptr) {
                 hook_requested.store(false, std::memory_order_seq_cst);
-                idle_hook(idle_argument);
+                RunIdleHook();
                 available = published.load(std::memory_order_acquire);
             }
             if (available == read_position) {
@@ -480,7 +518,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if (hook_requested.load(std::memory_order_relaxed) &&
                 idle_hook != nullptr) [[unlikely]] {
                 hook_requested.store(false, std::memory_order_seq_cst);
-                idle_hook(idle_argument);
+                RunIdleHook();
             }
             // Hand ring space back now and then while working through a long batch, and at once
             // when the front waits for this position (WaitForWriters).

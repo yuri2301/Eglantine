@@ -41,5 +41,6 @@
 
 // yuzu-specific files
 #define LOG_FILE "eden_log.txt"
+#define DEV_LOG_FILE "pitoco_dev.txt"
 #define LOSSLESS_DLL_FILE "Lossless.dll"
 #define LOSSLESS_CACHE_FILE "lsfg_spirv.cache"

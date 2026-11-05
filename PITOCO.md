@@ -16,6 +16,8 @@ files.
   the VRAM the driver reports as free, less what buffers and render targets hold. It never
   changes your settings.
 - **Legacy:** with Pitoco mode off, Switch 2 games run the way Eden and Eglantine run them.
+- Logs: `eden_log.txt` is the user log (general lines, warnings, errors); `pitoco_dev.txt` next
+  to it has everything, including the profiler, memory and GPU details, for development.
 - After a crash, `pitoco_crash.txt` (and `pitoco_crash.dmp`) in the log folder give the place;
   `pitoco.map` next to `pitoco.exe` names the function.
 

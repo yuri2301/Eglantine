@@ -98,6 +98,11 @@ bool Scheduler::WaitSubmitted(u64 tick) {
         return true;
     }
     auto& split = VideoCommon::GpuSplit::Get();
+    if (VideoCommon::GpuSplit::FrontHoldsBack()) {
+        // The back skips its idle hook while the front holds its state.
+        FlushDeferred();
+        return IsSubmitted(tick);
+    }
     split.RequestIdleHook();
     // No time limit: the back can spend seconds on one entry (a large shader's translation),
     // and a fence reported as submitted before it is would release its downloads too early.

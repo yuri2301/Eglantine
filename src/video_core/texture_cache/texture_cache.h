@@ -260,22 +260,10 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // MaxCriticalMemory on rather than near the card's budget.
     u64 max_critical = MaxCriticalMemory;
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
-        // Cards with a 10 GiB+ budget (this fork's 12 GB RTX 3060: ~11.3 GiB) let textures use
-        // the "Share of VRAM for textures" (nx2_texture_vram_share, 75% by default): at 5 GiB
-        // title 1 evicted ~21,700 images in a 50 minute session with VRAM at 5.7 of 11.3 GiB, and
-        // each one came back as an upload (and an ASTC decode) the next time the camera turned to
-        // it. The rest stays for buffers, render targets and other programs; the budget-following
-        // thresholds (TickFrame) still collect before that.
-        const u64 budget = runtime.GetDeviceMemoryBudget();
-        if (budget >= 10_GiB && Settings::PitocoActive()) {
-            // Pitoco mode: the budget less what the rest of the process holds in VRAM now
-            // (buffers, render targets, staging: device heaps minus the images), less 1 GiB.
-            // Title 1 in a race: 11.3 GiB budget, 5.9 GiB in the heaps of which 4.0 textures.
-            const u64 heaps = Common::Nx2Memory::Get(Common::Nx2Memory::Stat::VulkanDeviceHeaps);
-            const u64 others = heaps > image_bytes ? heaps - image_bytes : 0;
-            const u64 room = budget > others + 1_GiB ? budget - others - 1_GiB : budget / 2;
-            max_critical = (std::max)(max_critical, (std::min)(room, budget / 100 * 90));
-        }
+        // No raise past MaxCriticalMemory: Pitoco 2 let title 1's textures use the free VRAM,
+        // they grew to 8.3 GiB, the driver's backing commit filled the 16 GiB of RAM and the
+        // game's memory was paged out (choppier than legacy, which held ~4 GiB of textures).
+        // Video memory costs RAM on Windows too.
     }
     critical_memory = (std::min)(critical_memory, max_critical);
     expected_memory =

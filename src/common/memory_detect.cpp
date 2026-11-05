@@ -80,6 +80,7 @@ MemoryUsage GetMemoryUsage() {
                                 sizeof(counters))) {
         usage.process_working_set = counters.WorkingSetSize;
         usage.process_private = counters.PrivateUsage;
+        usage.page_faults = counters.PageFaultCount;
     }
     MEMORYSTATUSEX status{};
     status.dwLength = sizeof(status);

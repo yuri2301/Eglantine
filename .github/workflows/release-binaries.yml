@@ -68,6 +68,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v5
 
+      - name: Set Pitoco version
+        shell: bash
+        # Build N is version 0.<N / 10>.<N % 10> (build 19 = 0.1.9), shown in the title bar.
+        run: |
+          n="${GITHUB_RUN_NUMBER}"
+          echo "PITOCO_VERSION=0.$((n / 10)).$((n % 10))" >> "$GITHUB_ENV"
+
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'linux')
         shell: bash
@@ -381,8 +388,8 @@ jobs:
           # Include Wayland platform plugins and their graphics/shell integrations.
           export EXTRA_QT_MODULES=waylandcompositor
           export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
-          # Embedded in the AppImage metadata; matches the release tag (build-N) plus the commit.
-          export LDAI_VERSION="build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          # Embedded in the AppImage metadata; matches the release tag (v0.X.Y-beta) plus the commit.
+          export LDAI_VERSION="${PITOCO_VERSION}-beta-${GITHUB_SHA::7}"
           export LDAI_OUTPUT="pitoco-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           export ARCH="$arch"
@@ -596,11 +603,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="build-${GITHUB_RUN_NUMBER}"
+          n="${GITHUB_RUN_NUMBER}"
+          version="0.$((n / 10)).$((n % 10))"
+          tag="v${version}-beta"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
 
           cat > notes.md <<EOF
-          Automatic build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
+          Pitoco ${version} beta (prototype), build ${n}: \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
 
           ## Linux
 
@@ -633,5 +642,5 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --prerelease \
-            --title "Pitoco ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            --title "Pitoco ${version} beta (prototype)" \
             --notes-file notes.md

@@ -237,9 +237,26 @@ struct ColorConsoleBackend final : public Backend {
 };
 
 #ifndef __OPENORBIS__
+/// Pitoco: the emulator's own measurements (profiler, GPU, Switch 2 services, shader
+/// translation) below Warning go to the developer log only; the user log keeps the rest.
+bool IsDeveloperDetail(const Entry& entry) noexcept {
+    if (entry.log_level > Level::Info || entry.filename == nullptr) {
+        return false;
+    }
+    const std::string_view file{entry.filename};
+    for (const std::string_view area : {"video_core", "shader_recompiler", "nx2", "dynarmic"}) {
+        if (file.find(area) != std::string_view::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// @brief Backend that writes to a file passed into the constructor
 struct FileBackend final : public Backend {
-    explicit FileBackend(const std::filesystem::path filename) noexcept {
+    /// `developer_`: the developer log (pitoco_dev.txt), every entry and a larger size limit.
+    explicit FileBackend(const std::filesystem::path filename, bool developer_ = false) noexcept
+        : developer{developer_} {
         auto old_filename = filename;
         old_filename += ".old.txt";
         // Existence checks are done within the functions themselves.
@@ -251,7 +268,7 @@ struct FileBackend final : public Backend {
     ~FileBackend() noexcept override = default;
 
     void Write(const Entry& entry) noexcept override {
-        if (!enabled)
+        if (!enabled || (!developer && IsDeveloperDetail(entry)))
             return;
 
         auto message = FormatLogMessage(entry);
@@ -280,7 +297,8 @@ struct FileBackend final : public Backend {
 
         using namespace Common::Literals;
         // Prevent logs from exceeding a set maximum size in the event that log entries are spammed.
-        const auto write_limit = Settings::values.extended_logging.GetValue() ? 1_GiB : 100_MiB;
+        const auto write_limit =
+            Settings::values.extended_logging.GetValue() || developer ? 1_GiB : 100_MiB;
         const bool write_limit_exceeded = bytes_written > write_limit;
         if (entry.log_level >= Level::Error || write_limit_exceeded) {
             // Stop writing after the write limit is exceeded.
@@ -298,6 +316,7 @@ private:
     std::optional<FS::IOFile> file;
     std::size_t bytes_written = 0;
     bool enabled = true;
+    bool developer = false;
 };
 #endif
 #ifdef _WIN32
@@ -346,6 +365,8 @@ struct Impl {
 #ifndef __OPENORBIS__
         if (file_backend)
             lambda(static_cast<Backend&>(*file_backend));
+        if (dev_file_backend)
+            lambda(static_cast<Backend&>(*dev_file_backend));
 #endif
 #ifdef _WIN32
         lambda(static_cast<Backend&>(debugger_backend));
@@ -359,6 +380,7 @@ struct Impl {
     ColorConsoleBackend color_console_backend{};
 #ifndef __OPENORBIS__
     std::optional<FileBackend> file_backend;
+    std::optional<FileBackend> dev_file_backend;
 #endif
 #ifdef _WIN32
     DebuggerBackend debugger_backend{};
@@ -401,6 +423,7 @@ void Initialize() {
         const auto& log_dir = GetEdenPath(EdenPath::LogDir);
         void(CreateDir(log_dir));
         logging_instance->file_backend.emplace(log_dir / LOG_FILE);
+        logging_instance->dev_file_backend.emplace(log_dir / DEV_LOG_FILE, true);
 #endif
     }
 }

@@ -315,11 +315,16 @@ inline void Report(const char* thread_name = "GPU thread") {
         // Host memory at the same moment, to tell the emulator's own growth from the host's.
         constexpr double MiB = 1024.0 * 1024.0;
         const auto usage = Common::GetMemoryUsage();
+        // Page faults: a jump with RAM nearly full is the game's memory being paged back in.
+        static u64 last_faults = usage.page_faults;
+        const double faults = static_cast<double>(usage.page_faults - last_faults) * 1e9 / window;
+        last_faults = usage.page_faults;
         LOG_INFO(HW_GPU,
-                 "Memory: process working set {:.0f} MiB, private {:.0f} MiB | host RAM {}% used, "
-                 "{:.0f} MiB free | commit {:.0f} / {:.0f} MiB",
+                 "Memory: process working set {:.0f} MiB, private {:.0f} MiB, {:.0f} page faults/s "
+                 "| host RAM {}% used, {:.0f} MiB free | commit {:.0f} / {:.0f} MiB",
                  static_cast<double>(usage.process_working_set) / MiB,
-                 static_cast<double>(usage.process_private) / MiB, usage.physical_load_percent,
+                 static_cast<double>(usage.process_private) / MiB, faults,
+                 usage.physical_load_percent,
                  static_cast<double>(usage.available_physical) / MiB,
                  static_cast<double>(usage.commit_used) / MiB,
                  static_cast<double>(usage.commit_limit) / MiB);

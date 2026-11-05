@@ -57,6 +57,11 @@ public:
         idle_hook = hook;
         idle_argument = argument;
     }
+    /// Whether the calling thread is the front and holds the back's state: from the end of a
+    /// Drain until it sends more work, the back's idle hook does not run.
+    [[nodiscard]] static bool FrontHoldsBack() {
+        return holds_back;
+    }
     /// Any thread: whether the back thread runs (false before it starts and once it stopped).
     [[nodiscard]] bool BackRunning() const {
         return back_running.load(std::memory_order_acquire);
@@ -207,10 +212,18 @@ private:
 
     static GpuSplit instance;
     static inline thread_local bool on_back_thread{};
+    static inline thread_local bool holds_back{};
     void (*idle_hook)(void*){};
     void* idle_argument{};
     alignas(64) std::atomic<bool> hook_requested{};
     std::atomic<bool> back_running{};
+    /// The front uses the back's state after a drain (front_holds); the back runs its idle hook
+    /// (hook_running). Each sets its flag before reading the other's, so they never overlap.
+    std::atomic<bool> front_holds{};
+    std::atomic<bool> hook_running{};
+    void HoldBack();
+    void ReleaseBack();
+    void RunIdleHook();
 
     // 128 bytes: x86 spatial prefetchers pull 64-byte lines in pairs. back_waiting and wake are
     // always touched together by both threads, so they share a block.

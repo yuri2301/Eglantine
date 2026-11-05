@@ -72,11 +72,16 @@ static LONG WINAPI WriteCrashReport(EXCEPTION_POINTERS* exception) {
         WriteFile(text, report.data(), static_cast<DWORD>(report.size()), &written_bytes, nullptr);
         CloseHandle(text);
     }
+    // MINIDUMP_EXCEPTION_INFORMATION is 4-byte packed (dbghelp.h): with natural alignment the
+    // pointer moved and Pitoco 2 wrote empty dumps.
+#pragma pack(push, 4)
     struct ExceptionInformation {
         DWORD thread_id;
         EXCEPTION_POINTERS* exception_pointers;
         BOOL client_pointers;
     };
+#pragma pack(pop)
+    static_assert(sizeof(ExceptionInformation) == 16);
     using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, int,
                                               const ExceptionInformation*, const void*, const void*);
     const HMODULE dbghelp = LoadLibraryA("dbghelp.dll");

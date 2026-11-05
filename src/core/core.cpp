@@ -74,6 +74,10 @@
 #include "video_core/renderer_base.h"
 #include "video_core/video_core.h"
 
+#ifndef _WIN32
+extern char** environ;
+#endif
+
 namespace Core {
 
 std::atomic<u64> g_nx2_present_count{};
@@ -382,6 +386,24 @@ struct System::Impl {
         LOG_INFO(Core, "Pitoco mode: {}", pitoco_mode       ? "on"
                                           : switch2_program ? "off (legacy)"
                                                             : "off (not a Switch 2 program)");
+        // Developer switches change behaviour behind the mode (build 18's shipped
+        // nx2_switches.txt turned the GPU split on in legacy too): list every one in effect.
+        {
+#ifdef _WIN32
+            char** const variables = _environ;
+#else
+            char** const variables = environ;
+#endif
+            std::string switches;
+            for (char** variable = variables; variable != nullptr && *variable != nullptr;
+                 ++variable) {
+                if (std::string_view{*variable}.starts_with("EDEN_")) {
+                    switches += switches.empty() ? "" : ", ";
+                    switches += *variable;
+                }
+            }
+            LOG_INFO(Core, "Developer switches in effect: {}", switches.empty() ? "none" : switches);
+        }
         if (pitoco_mode && !keep_settings && Settings::values.nx2_rig_profile.GetValue()) {
             const auto suggest = [](auto& setting, auto value, const char* name) {
                 if (!setting.UsingGlobal()) {

@@ -24,6 +24,11 @@ else()
     set(IS_DEV_BUILD true)
 endif()
 
+# Pitoco releases: 0.<build / 10>.<build % 10> beta, set by the release workflow (build 19 = 0.1.9).
+if (DEFINED ENV{PITOCO_VERSION})
+    set(BUILD_VERSION "$ENV{PITOCO_VERSION} beta")
+endif()
+
 if (NIGHTLY_BUILD)
     set(IS_NIGHTLY_BUILD true)
 else()

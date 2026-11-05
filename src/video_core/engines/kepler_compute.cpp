@@ -964,11 +964,18 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         // A pass with no pair of its own (Donkey Kong Bananza: the first frame, and a second
         // network program from 168 s on) left the frame unwritten, purple: blit the last pair
         // that worked instead.
+        // Only for programs of the same network (code within 1 MiB): Ocarina of Time's own
+        // network program elsewhere had the frame overwritten with the upscaler's stale pair.
         static std::optional<std::pair<Texture::TICEntry, Texture::TICEntry>> last_pair;
+        static GPUVAddr last_pair_program{};
         static u64 reused{};
+        const GPUVAddr code = regs.code_loc.Address();
+        const GPUVAddr distance =
+            code > last_pair_program ? code - last_pair_program : last_pair_program - code;
         if (input && output) {
             last_pair.emplace(*input, *output);
-        } else if (last_pair) {
+            last_pair_program = code;
+        } else if (last_pair && distance < 0x100000) {
             input = last_pair->first;
             output = last_pair->second;
             if (reused++ % 600 == 0) {
