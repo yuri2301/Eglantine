@@ -383,8 +383,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "commands are processed on two threads in parallel (one reads the command lists and "
               "runs the macros, the other applies the state and records the draws), the emulator "
               "runs at high priority, and the game's memory is kept in RAM while the PC has RAM "
-              "free.
-Off (compatibility): Switch 2 games run the way Eden runs them, on one GPU "
+              "free.\nOff (compatibility): Switch 2 games run the way Eden runs them, on one GPU "
               "thread. Your other settings are never changed."));
     INSERT(Settings, nx2_rig_profile, tr("Apply the rig profile to Switch 2 games"),
            tr("When a Switch 2 game starts, settings you have not changed yourself take the values "
