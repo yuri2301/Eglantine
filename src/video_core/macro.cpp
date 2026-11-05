@@ -1345,7 +1345,7 @@ static void Dump(u64 hash, std::span<const u32> code, bool decompiled = false) {
 
 void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method,
                           std::span<const u32> parameters) {
-    VideoCommon::Nx2Profile::SampledScope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+    VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
     if (native_turing) {
         maxwell3d.RefreshParameters();
         // Reused between calls (a macro never calls another: methods >= 0xe00 are refused below);

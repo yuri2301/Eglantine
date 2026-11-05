@@ -344,9 +344,6 @@ struct Info {
     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor
     /// is a candidate and its bound length (not an NVN size word) limits the range.
     bool native_global_bounds{};
-    /// Some global access could not be tied to a storage buffer (a pointer loaded from memory):
-    /// only these programs read through the guest address table.
-    bool uses_untracked_global_memory{};
     bool uses_atomic_image_u32{};
     bool uses_shadow_lod{};
     bool uses_rescaling_uniform{};

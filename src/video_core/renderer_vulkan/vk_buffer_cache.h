@@ -271,16 +271,7 @@ public:
         return max_dynamic_storage_buffers;
     }
 
-    /// Device address of the guest address table's root (Shader::Profile), 0 when unavailable.
-    [[nodiscard]] u64 GuestAddressTable() const noexcept {
-        return guest_address_root_address;
-    }
-
-    /// Root entries: one per 64 MiB of the 40-bit guest GPU address space.
-    static constexpr size_t GuestAddressRootEntries = size_t{1} << 14;
-
 private:
-    void CreateGuestAddressTable();
     void BindBuffer(const Buffer& buffer, u32 offset, u32 size) {
         const VkBuffer handle = buffer.Handle();
         if (handle == VK_NULL_HANDLE) {
@@ -320,9 +311,6 @@ private:
 
     bool limit_dynamic_storage_buffers = false;
     u32 max_dynamic_storage_buffers = (std::numeric_limits<u32>::max)();
-
-    vk::Buffer guest_address_root;
-    u64 guest_address_root_address{};
 };
 
 struct BufferCacheParams {

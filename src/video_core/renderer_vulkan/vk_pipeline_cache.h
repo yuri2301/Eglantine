@@ -124,11 +124,6 @@ public:
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback);
 
-    /// Shaders built from now on read untracked global memory through this table (0: none).
-    void SetGuestAddressTable(u64 address) noexcept {
-        profile.guest_address_table = address;
-    }
-
 private:
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
 

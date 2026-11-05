@@ -1016,61 +1016,12 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             access(index, ssbo_addr, cond);
         }
     }};
-    // An address outside every bound buffer (a pointer the program loaded from memory) is read
-    // through the guest address table when there is one: L1 entry per 64 MiB of guest GPU
-    // address space -> L2 table, L2 entry per 4 KiB page -> device address of the page's copy.
-    // Only programs with untracked accesses: 0.2.3/0.2.4 gave every program with global memory
-    // the table path (MKW's compute shaders too) and NVIDIA's driver crashed compiling them.
-    const bool guest_pointers{profile.guest_address_table != 0 &&
-                              info.uses_untracked_global_memory};
-    Id guest_u64_pointer{};
-    if (guest_pointers) {
-        AddExtension("SPV_KHR_physical_storage_buffer");
-        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
-        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
-        guest_u64_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U64);
-    }
-    const auto load_through_table{[&](Id addr, Id type, u32 shift) {
-        const auto load_u64{[&](Id address) {
-            return OpLoad(U64, OpConvertUToPtr(guest_u64_pointer, address),
-                          spv::MemoryAccessMask::Aligned, 8U);
-        }};
-        const auto entry{[&](Id table, u64 address_shift, u64 mask) {
-            const Id index{OpBitwiseAnd(U64, OpShiftRightLogical(U64, addr, Constant(U64, address_shift)),
-                                        Constant(U64, mask))};
-            return load_u64(
-                OpIAdd(U64, table, OpShiftLeftLogical(U64, index, Constant(U64, u64{3}))));
-        }};
-        const Id null_u64{Constant(U64, u64{0})};
-        const Id l2_table{entry(Constant(U64, profile.guest_address_table), 26, 0x3fff)};
-        const Id has_l2_label{OpLabel()};
-        const Id no_l2_label{OpLabel()};
-        OpSelectionMerge(no_l2_label, spv::SelectionControlMask::MaskNone);
-        OpBranchConditional(OpINotEqual(U1, l2_table, null_u64), has_l2_label, no_l2_label);
-        AddLabel(has_l2_label);
-        const Id page{entry(l2_table, 12, 0x3fff)};
-        const Id has_page_label{OpLabel()};
-        const Id no_page_label{OpLabel()};
-        OpSelectionMerge(no_page_label, spv::SelectionControlMask::MaskNone);
-        OpBranchConditional(OpINotEqual(U1, page, null_u64), has_page_label, no_page_label);
-        AddLabel(has_page_label);
-        const Id host{OpIAdd(U64, page, OpBitwiseAnd(U64, addr, Constant(U64, u64{0xfff})))};
-        const Id pointer{OpConvertUToPtr(TypePointer(spv::StorageClass::PhysicalStorageBuffer, type),
-                                         host)};
-        OpReturnValue(OpLoad(type, pointer, spv::MemoryAccessMask::Aligned, 1U << shift));
-        AddLabel(no_page_label);
-        OpBranch(no_l2_label);
-        AddLabel(no_l2_label);
-    }};
     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
         const Id function_type{TypeFunction(type, U64)};
         const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone, function_type)};
         const Id addr{OpFunctionParameter(U64)};
         define_body(ssbo_member, addr, element_pointer, shift,
                     [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
-        if (guest_pointers) {
-            load_through_table(addr, type, shift);
-        }
         OpReturnValue(ConstantNull(type));
         OpFunctionEnd();
         return func_id;
