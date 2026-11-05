@@ -586,7 +586,7 @@ bool ReadAheadEnabled() {
         return value == nullptr ? -1 : (value[0] != '0' ? 1 : 0);
     }();
     return forced >= 0 ? forced == 1
-                       : Settings::PitocoActive() &&
+                       : Settings::ParallelExecutionActive() &&
                              Settings::values.nx2_read_ahead_gpu_commands.GetValue();
 }
 std::atomic<u32> g_read_ahead_mismatches{};

@@ -74,6 +74,8 @@ const Themes themes{{
     {"Midnight Blue", "qdarkstyle_midnight_blue"},
     {"Midnight Blue Colorful", "colorful_midnight_blue"},
     {"Pitoco", "pitoco"},
+    {"Pitoco Sky", "pitoco_sky"},
+    {"Pitoco Silver", "pitoco_silver"},
 }};
 
 bool IsDarkTheme() {

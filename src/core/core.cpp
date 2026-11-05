@@ -380,12 +380,14 @@ struct System::Impl {
         // value differs from Eden's default; both are kept. The rig value is a per-game value of
         // this session only (RestoreGlobalState drops it). EDEN_NX2_KEEP_SETTINGS=1 skips it.
         static const bool keep_settings = std::getenv("EDEN_NX2_KEEP_SETTINGS") != nullptr;
-        // Pitoco mode is decided here, once per game, and every Pitoco path reads this decision.
-        const bool pitoco_mode = switch2_program && Settings::values.pitoco_mode.GetValue();
-        Settings::SetPitocoActive(pitoco_mode);
-        LOG_INFO(Core, "Pitoco mode: {}", pitoco_mode       ? "on"
-                                          : switch2_program ? "off (legacy)"
-                                                            : "off (not a Switch 2 program)");
+        // Parallel GPU execution is decided here, once per game, and every path of it reads this.
+        const bool parallel_execution =
+            switch2_program && Settings::values.parallel_gpu_execution.GetValue();
+        Settings::SetParallelExecutionActive(parallel_execution);
+        LOG_INFO(Core, "Parallel GPU execution: {}",
+                 parallel_execution ? "on"
+                 : switch2_program  ? "off (compatibility)"
+                                    : "off (not a Switch 2 program)");
         // Developer switches change behaviour behind the mode (build 18's shipped
         // nx2_switches.txt turned the GPU split on in legacy too): list every one in effect.
         {
@@ -404,7 +406,7 @@ struct System::Impl {
             }
             LOG_INFO(Core, "Developer switches in effect: {}", switches.empty() ? "none" : switches);
         }
-        if (pitoco_mode && !keep_settings && Settings::values.nx2_rig_profile.GetValue()) {
+        if (parallel_execution && !keep_settings && Settings::values.nx2_rig_profile.GetValue()) {
             const auto suggest = [](auto& setting, auto value, const char* name) {
                 if (!setting.UsingGlobal()) {
                     LOG_INFO(Core, "Rig profile: {} kept at the game's own {}", name,
@@ -446,10 +448,10 @@ struct System::Impl {
             // Presentation on its own thread, so the GPU thread does not wait for the swapchain.
             suggest(Settings::values.async_presentation, true, "async_presentation");
         }
-        // Pitoco mode runs at high priority and keeps the game in RAM, the working set minimum
+        // Parallel GPU execution runs at high priority and keeps the game in RAM, the working set minimum
         // then following free RAM (Common::UpdateKeepInRam, every 600 frames).
-        Common::SetProcessHighPriority(pitoco_mode);
-        Common::SetProcessKeepInRam(pitoco_mode);
+        Common::SetProcessHighPriority(parallel_execution);
+        Common::SetProcessKeepInRam(parallel_execution);
         Common::Nx2Memory::Reset();
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant

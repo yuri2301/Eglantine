@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <string>
 #include <thread>
+#include <vector>
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -43,6 +45,99 @@ void Pause() {
 }
 
 [[maybe_unused]] std::atomic<u32> g_back_thread_id{};
+
+// Profiler on: which executable methods the back spends its time in (every 64th call timed,
+// including what the method runs), reported every 10 s. Back thread only.
+struct MethodStats {
+    static constexpr size_t Engines = 4;
+    static constexpr size_t Methods = 0x4000;
+    std::array<const Tegra::Engines::EngineInterface*, Engines> engines{};
+    std::array<std::array<u64, Methods>, Engines> ns{};
+    std::array<std::array<u32, Methods>, Engines> count{};
+    u32 tick{};
+    u64 window_start{};
+};
+MethodStats g_method_stats;
+
+template <typename Call>
+void TimedMethod(const Tegra::Engines::EngineInterface* engine, u32 method, Call&& call) {
+    if (!Nx2Profile::Enabled()) {
+        call();
+        return;
+    }
+    auto& stats = g_method_stats;
+    size_t slot = 0;
+    while (slot < MethodStats::Engines && stats.engines[slot] != engine &&
+           stats.engines[slot] != nullptr) {
+        ++slot;
+    }
+    if (slot == MethodStats::Engines) {
+        call();
+        return;
+    }
+    stats.engines[slot] = engine;
+    const size_t index = method & (MethodStats::Methods - 1);
+    ++stats.count[slot][index];
+    if (++stats.tick % 64 != 0) {
+        call();
+        return;
+    }
+    const u64 start = Nx2Profile::Now();
+    call();
+    stats.ns[slot][index] += (Nx2Profile::Now() - start) * 64;
+}
+
+void ReportMethods() {
+    if (!Nx2Profile::Enabled()) {
+        return;
+    }
+    auto& stats = g_method_stats;
+    const u64 now = Nx2Profile::Now();
+    if (stats.window_start == 0) {
+        stats.window_start = now;
+        return;
+    }
+    const u64 window = now - stats.window_start;
+    if (window < 10'000'000'000ULL) {
+        return;
+    }
+    struct Row {
+        u64 ns;
+        u32 count;
+        size_t slot;
+        size_t method;
+    };
+    std::vector<Row> rows;
+    for (size_t slot = 0; slot < MethodStats::Engines; ++slot) {
+        for (size_t method = 0; method < MethodStats::Methods; ++method) {
+            if (stats.count[slot][method] != 0) {
+                rows.push_back({stats.ns[slot][method], stats.count[slot][method], slot, method});
+            }
+        }
+    }
+    const size_t shown = (std::min)(rows.size(), size_t{16});
+    std::partial_sort(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(shown), rows.end(),
+                      [](const Row& a, const Row& b) { return a.ns > b.ns; });
+    std::string line;
+    for (size_t i = 0; i < shown; ++i) {
+        const Row& row = rows[i];
+        const auto* const engine = stats.engines[row.slot];
+        line += fmt::format(" | {}{} {:#x}: {:.1f} ms ({:.0f}/s, {:.2f} us each)",
+                            engine->sink_macro_writes ? "3D" : "engine ",
+                            engine->sink_macro_writes ? std::string{} : std::to_string(row.slot),
+                            row.method, static_cast<double>(row.ns) * 1000.0 / window,
+                            static_cast<double>(row.count) * 1e9 / window,
+                            static_cast<double>(row.ns) / 1000.0 / row.count);
+    }
+    LOG_INFO(HW_GPU, "GPU back thread methods per second (sampled, with what each ran):{}", line);
+    for (auto& table : stats.ns) {
+        table.fill(0);
+    }
+    for (auto& table : stats.count) {
+        table.fill(0);
+    }
+    stats.window_start = now;
+}
 std::atomic<bool> g_back_busy{};
 
 } // Anonymous namespace
@@ -86,10 +181,10 @@ void GpuSplit::CheckOwner(const char* where) {
 GpuSplit GpuSplit::instance;
 
 void GpuSplit::MaybeStart(Core::System& system_) {
-    // Pitoco mode splits engine methods and macros over two threads; legacy runs one GPU thread.
+    // Parallel GPU execution splits engine methods and macros over two threads; legacy runs one GPU thread.
     // EDEN_NX2_SPLIT=0/1/2 still overrides it.
     static const char* const env_mode = std::getenv("EDEN_NX2_SPLIT");
-    const char mode = env_mode != nullptr ? env_mode[0] : Settings::PitocoActive() ? '2' : '0';
+    const char mode = env_mode != nullptr ? env_mode[0] : Settings::ParallelExecutionActive() ? '2' : '0';
     const bool wanted = mode == '1' || mode == '2';
     if (!wanted || !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
         return;
@@ -122,7 +217,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
 #endif
     LOG_INFO(HW_GPU, "GPU thread split: engine methods run on a second thread{} ({})",
              front_macros ? ", macros on the first" : "",
-             env_mode != nullptr ? "EDEN_NX2_SPLIT" : "Pitoco mode");
+             env_mode != nullptr ? "EDEN_NX2_SPLIT" : "Parallel GPU execution");
 }
 
 void GpuSplit::Stop() {
@@ -363,7 +458,7 @@ size_t GpuSplit::Execute(const u64* entry) {
             }
             Nx2Profile::SampledScope method_scope{Nx2Profile::Zone::Method};
             ConsumeSinkTimed(engine);
-            engine->CallMethod(*system, method, argument, true);
+            TimedMethod(engine, method, [&] { engine->CallMethod(*system, method, argument, true); });
         } else if (!engine->execution_mask[method]) {
             engine->method_sink.emplace_back(method, argument);
         } else {
@@ -372,7 +467,9 @@ size_t GpuSplit::Execute(const u64* entry) {
             if ((head & HasSegment) != 0) {
                 engine->current_dma_segment = entry[1];
             }
-            engine->CallMethod(*system, method, argument, (head & IsLast) != 0);
+            TimedMethod(engine, method, [&] {
+                engine->CallMethod(*system, method, argument, (head & IsLast) != 0);
+            });
         }
         return (head & HasSegment) != 0 ? 2 : 1;
     }
@@ -386,8 +483,10 @@ size_t GpuSplit::Execute(const u64* entry) {
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
         }
-        engine->CallMultiMethod(*system, method, reinterpret_cast<const u32*>(entry + data),
-                                amount, static_cast<u32>(entry[1]));
+        TimedMethod(engine, method, [&] {
+            engine->CallMultiMethod(*system, method, reinterpret_cast<const u32*>(entry + data),
+                                    amount, static_cast<u32>(entry[1]));
+        });
         return data + (amount + 1) / 2;
     }
     case Kind::Call: {
@@ -446,8 +545,10 @@ size_t GpuSplit::ExecuteCoalesced(const u64* entry, size_t limit) {
     if (has_segment) {
         back_engine->current_dma_segment = segment;
     }
-    back_engine->CallMultiMethod(*system, method, words.data(), static_cast<u32>(count),
-                                 static_cast<u32>(count));
+    TimedMethod(back_engine, method, [&] {
+        back_engine->CallMultiMethod(*system, method, words.data(), static_cast<u32>(count),
+                                     static_cast<u32>(count));
+    });
     return position;
 }
 
@@ -457,7 +558,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
-    if (Settings::PitocoActive() && Settings::values.nx2_pin_gpu_threads.GetValue()) {
+    if (Settings::ParallelExecutionActive() && Settings::values.nx2_pin_gpu_threads.GetValue()) {
         Common::PinCurrentThreadToPhysicalCoreFromLast(1);
     }
     system->RegisterHostThread();
@@ -472,6 +573,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     }();
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread");
+        ReportMethods();
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};

@@ -123,7 +123,7 @@ void SetProcessHighPriority(bool high);
 /// Raises (or restores) the process's minimum working set so Windows trims other processes
 /// before this one. Soft: the hard minimum stays off.
 void SetProcessKeepInRam(bool keep);
-/// Pitoco mode: moves the working set minimum with the RAM the PC has free (call now and then).
+/// Parallel GPU execution: moves the working set minimum with the RAM the PC has free (call now and then).
 void UpdateKeepInRam();
 
 void RefreshThreadPolicies();

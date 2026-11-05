@@ -32,7 +32,6 @@
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/native_query_trace.h"
-#include "video_core/indirect_reset.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -250,82 +249,6 @@ RasterizerVulkan::~RasterizerVulkan() {
     scheduler.Finish();
 }
 
-// Experimental adaptation of PokeDinner commit 76df4591a747: execute the reset shader's
-// indirect record writes on the host until general GPU-address translation is available.
-bool RasterizerVulkan::TryNx2IndirectReset() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("EDEN_NX2_RESETFIX");
-        return !value || std::string_view{value} != "0";
-    }();
-    if (!enabled || !maxwell3d->GetNativeMacroEngine().native_turing ||
-        !pipeline_cache.IsIndirectResetShader()) {
-        return false;
-    }
-    const auto reject = [](std::string_view reason) {
-        static u32 reported_rejections{};
-        if (reported_rejections++ < 8) {
-            LOG_WARNING(HW_GPU, "Experimental indirect reset skipped: {}", reason);
-        }
-        return false;
-    };
-    const auto in_gpu_range = [this](u64 address, size_t size) {
-        return size != 0 && address <= (std::numeric_limits<u64>::max)() - size &&
-               gpu_memory->IsWithinGPUAddressRange(address) &&
-               gpu_memory->IsWithinGPUAddressRange(address + size - 1);
-    };
-    const auto& cbuf = maxwell3d->state.shader_stages[0].const_buffers[0];
-    if (!cbuf.enabled || cbuf.size < 0x120 || !in_gpu_range(cbuf.address, 0x120) ||
-        !gpu_memory->IsFullyMappedRange(cbuf.address + 0x110, 16)) {
-        return reject("descriptor unavailable");
-    }
-    std::array<u64, 2> descriptor{};
-    gpu_memory->ReadBlock(cbuf.address + 0x110, descriptor.data(), sizeof(descriptor));
-    const u64 list = descriptor[0];
-    const auto& draw = maxwell3d->draw_manager.draw_state;
-    const u64 first = draw.vertex_buffer.first;
-    const u64 count = draw.vertex_buffer.count;
-    const auto range = VideoCommon::IndirectResetRange(list, static_cast<u32>(descriptor[1]),
-                                                        first, count);
-    if (!range || !in_gpu_range(range->begin, range->size) ||
-        !gpu_memory->IsFullyMappedRange(range->begin, range->size)) {
-        return reject("list outside mapped descriptor");
-    }
-    if (gpu_memory->IsMemoryDirty(range->begin, range->size, VideoCommon::CacheType::BufferCache)) {
-        gpu_memory->FlushRegion(range->begin, range->size, VideoCommon::CacheType::BufferCache);
-    }
-    std::vector<u64> pointers(count);
-    gpu_memory->ReadBlockUnsafe(range->begin, pointers.data(), range->size);
-    static constexpr std::array<u32, 5> record{0, 1, 0, 0, 0};
-    for (const u64 pointer : pointers) {
-        if (!pointer) {
-            continue;
-        }
-        if (!in_gpu_range(pointer, sizeof(record)) ||
-            !gpu_memory->IsFullyMappedRange(pointer, sizeof(record))) {
-            return reject("record not mapped");
-        }
-        if (pointer < range->begin + range->size && range->begin < pointer + sizeof(record)) {
-            return reject("record overlaps pointer list");
-        }
-        const auto segments = gpu_memory->GetSubmappedRange(pointer, sizeof(record));
-        if (segments.size() != 1 || segments[0].first != pointer ||
-            segments[0].second != sizeof(record)) {
-            return reject("record crosses a mapping boundary");
-        }
-    }
-    const std::span<const u8> bytes{reinterpret_cast<const u8*>(record.data()), sizeof(record)};
-    for (const u64 pointer : pointers) {
-        if (pointer) {
-            AccelerateInlineToMemory(pointer, bytes.size(), bytes);
-        }
-    }
-    static u32 reported{};
-    if (reported++ < 5) {
-        LOG_INFO(HW_GPU, "Experimental indirect reset: {} records", count);
-    }
-    return true;
-}
-
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
@@ -363,10 +286,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     }()};
     if (!pipeline) {
         report_failure("no pipeline");
-        return;
-    }
-    if (!is_indexed && TryNx2IndirectReset()) {
-        submitted = true;
         return;
     }
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
@@ -462,87 +381,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 }
 
 
-namespace {
-// EDEN_NX2_WINDOW_TRACE: describe clears and draws into screen-sized colour targets (debug aid).
-void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& memory,
-                       const char* kind, u32 count) {
-    static const bool trace = std::getenv("EDEN_NX2_WINDOW_TRACE") != nullptr;
-    static u32 traced{};
-    const auto& regs = maxwell3d.regs;
-    static const u64 skip = [] {
-        const char* value = std::getenv("EDEN_NX2_WINDOW_TRACE_SKIP");
-        return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
-    }();
-    static u64 seen_events{};
-    static const u64 only_ps = [] {
-        const char* value = std::getenv("EDEN_NX2_TRACE_PS");
-        return value != nullptr ? std::strtoull(value, nullptr, 16) : 0ULL;
-    }();
-    const u64 pixel_shader =
-        (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-    if (!trace || regs.rt[0].width != 3840 || traced >= 400 || seen_events++ < skip ||
-        (only_ps != 0 && pixel_shader != only_ps)) {
-        return;
-    }
-    ++traced;
-    const auto& vp = regs.viewport_transform[0];
-    const auto& sc = regs.scissor_test[0];
-    LOG_INFO(HW_GPU,
-             "nx2 window {} rt0={:#x} count={} clear={:#x} color=({},{},{},{}) mask_common={} "
-             "mask0={:#x} rt_count={} vp scale=({},{}) translate=({},{}) scissor en={} x={}..{} "
-             "y={}..{} blend0={} vs={:#x} ps={:#x} rasterize={}",
-             kind, regs.rt[0].Address(), count, regs.clear_surface.raw, regs.clear_color[0],
-             regs.clear_color[1], regs.clear_color[2], regs.clear_color[3], regs.color_mask_common,
-             regs.color_mask[0].raw, regs.rt_control.count.Value(), vp.scale_x, vp.scale_y,
-             vp.translate_x, vp.translate_y, sc.enable, sc.min_x.Value(), sc.max_x.Value(),
-             sc.min_y.Value(), sc.max_y.Value(), regs.blend.enable[0],
-             (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1],
-             (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1],
-             regs.rasterize_enable);
-    if (kind[0] != 'd') {
-        return;
-    }
-    // Pixel-stage constant buffer 3: colour constants of the loading-screen passes.
-    if (const auto& cb3 = maxwell3d.state.shader_stages[4].const_buffers[3]; cb3.enabled) {
-        std::array<f32, 8> values{};
-        memory.ReadBlockUnsafe(cb3.address, values.data(), sizeof(values));
-        LOG_INFO(HW_GPU, "nx2 window ps c[3]@{:#x} size={}: {}", cb3.address, cb3.size,
-                 fmt::join(values, " "));
-    }
-    static u32 texture_traces{};
-    if (texture_traces++ > 200) {
-        return;
-    }
-    // Texture used by the pixel shader's first bound TEX (handle in c[2][0x20]) and its TIC.
-    const auto& cb = maxwell3d.state.shader_stages[4].const_buffers[2];
-    const u32 handle = cb.enabled ? memory.Read<u32>(cb.address + 0x20) : 0;
-    const u32 tic_index = handle & 0xfffff;
-    const GPUVAddr tic_address = regs.tex_header.Address() + u64{tic_index} * 32;
-    std::array<u32, 8> tic{};
-    memory.ReadBlockUnsafe(tic_address, tic.data(), sizeof(tic));
-    LOG_INFO(HW_GPU,
-             "nx2 window texture: cb2={:#x} en={} handle={:#x} tic pool={:#x} limit={} "
-             "sampler pool={:#x} tic[{}]={:08x}",
-             cb.address, cb.enabled, handle, regs.tex_header.Address(), regs.tex_header.limit,
-             regs.tex_sampler.Address(), tic_index, fmt::join(tic, " "));
-    // First bytes of the texture's memory (block-linear, so just a sample).
-    const GPUVAddr texture = (GPUVAddr{tic[2] & 0xffff} << 32) | tic[1];
-    std::array<u32, 16> texels{};
-    memory.ReadBlockUnsafe(texture, texels.data(), sizeof(texels));
-    LOG_INFO(HW_GPU, "nx2 window texture {:#x} {}x{}: {:08x}", texture, (tic[4] & 0xffff) + 1,
-             (tic[5] & 0xffff) + 1, fmt::join(texels, " "));
-    // EDEN_NX2_TEXTURE_DUMP=<file>: save the first 4 MiB of the last traced texture's memory.
-    if (const char* path = std::getenv("EDEN_NX2_TEXTURE_DUMP"); path != nullptr) {
-        std::vector<u8> bytes(2048u * 10240u);
-        memory.ReadBlockUnsafe(texture, bytes.data(), bytes.size());
-        if (std::FILE* file = std::fopen(path, "wb")) {
-            std::fwrite(bytes.data(), 1, bytes.size(), file);
-            std::fclose(file);
-        }
-    }
-}
-} // Anonymous namespace
-
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     {
@@ -561,115 +399,6 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                             count, is_indexed ? "indices" : "vertices", first, MaxVertices);
             }
             return;
-        }
-    }
-    TraceWindowTarget(*maxwell3d, *gpu_memory, is_indexed ? "draw-indexed" : "draw",
-                      is_indexed ? maxwell3d->draw_manager.draw_state.index_buffer.count
-                                 : maxwell3d->draw_manager.draw_state.vertex_buffer.count);
-    // EDEN_NX2_CB24_TRACE: for draws whose vertex shader reads bank 24, show the inline
-    // constant buffer upload target (CB_ADDRESS) and its first words.
-    if (static const bool trace = std::getenv("EDEN_NX2_CB24_TRACE") != nullptr; trace) {
-        const auto& regs = maxwell3d->regs;
-        const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
-        static u32 logged{};
-        if ((vs == 0x11471c9a00 || vs == 0x11471ca600 || vs == 0x11471cd300) && logged++ < 3) {
-            std::array<u32, 24> words{};
-            gpu_memory->ReadBlockUnsafe(regs.const_buffer.Address(), words.data(), sizeof(words));
-            LOG_INFO(HW_GPU, "bank24 draw vs={:#x}: CB_ADDRESS {:#x} size {:#x} offset {:#x}: {:08x}", vs,
-                     regs.const_buffer.Address(), regs.const_buffer.size, regs.const_buffer.offset,
-                     fmt::join(words, " "));
-            // Search every bound vertex-stage buffer for render-target-size values.
-            const auto& stage = maxwell3d->state.shader_stages[0];
-            for (u32 slot = 0; slot < Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers; ++slot) {
-                const auto& buffer = stage.const_buffers[slot];
-                if (!buffer.enabled || buffer.size == 0) continue;
-                std::vector<u32> data(std::min<u32>(buffer.size, 0x10000) / 4);
-                gpu_memory->ReadBlockUnsafe(buffer.address, data.data(), data.size() * 4);
-                for (size_t i = 0; i < data.size(); ++i) {
-                    const u32 w = data[i];
-                    if (w == 0x45200000 || w == 0x44b40000 || w == 0x39cccccd || w == 0x3a360b61 ||
-                        w == 0x44a00000 || w == 0x44340000 || w == 2559 || w == 1439) {
-                        LOG_INFO(HW_GPU, "  slot {} +{:#x} = {:#x}", slot, i * 4, w);
-                    }
-                }
-            }
-        }
-    }
-    // EDEN_NX2_TRACE_VS=<address>: describe the next few draws using that vertex shader like the
-    // after-upscale trace does (render target, blend, fragment textures).
-    static const u64 trace_vs = [] {
-        const char* value = std::getenv("EDEN_NX2_TRACE_VS");
-        return value ? std::strtoull(value, nullptr, 16) : 0ULL;
-    }();
-    if (trace_vs != 0) {
-        const auto& regs = maxwell3d->regs;
-        const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
-        static u32 traced{};
-        if (vs == trace_vs && traced++ % 200 == 0 && traced < 1000) {
-            Tegra::Engines::g_nx2_trace_draws_after_upscale = 1;
-        }
-    }
-    if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
-        --Tegra::Engines::g_nx2_trace_draws_after_upscale;
-        const auto& regs = maxwell3d->regs;
-        const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
-        const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-        LOG_INFO(HW_GPU, "after upscale: draw rt0 {:#x} {}x{} fmt {:#x} block {}/{}/{} pitch_linear {} depth {} array_pitch {:#x} ctrl {:#x} vs {:#x} ps {:#x}",
-                 regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height,
-                 static_cast<u32>(regs.rt[0].format), regs.rt[0].tile_mode.block_width.Value(),
-                 regs.rt[0].tile_mode.block_height.Value(), regs.rt[0].tile_mode.block_depth.Value(),
-                 regs.rt[0].tile_mode.is_pitch_linear.Value(), regs.rt[0].depth.Value(),
-                 regs.rt[0].array_pitch, regs.rt_control.count.Value(), vs, ps);
-        // Fragment-stage texture handles (bound buffer 2) and the images they name.
-        const auto& handles = maxwell3d->state.shader_stages[4].const_buffers[2];
-        if (handles.enabled) {
-            for (u32 i = 0; i < 24; ++i) {
-                const u32 handle = gpu_memory->Read<u32>(handles.address + i * 4);
-                if (handle == 0 || handle == 0xffffffff) continue;
-                Tegra::Texture::TICEntry tic{};
-                gpu_memory->ReadBlockUnsafe(regs.tex_header.Address() + u64{handle & 0xfffff} * sizeof(tic),
-                                            &tic, sizeof(tic));
-                LOG_INFO(HW_GPU, "  fs handle[{}] = {:#x}: {:#x} {}x{} format {:#x}", i, handle,
-                         tic.Address(), tic.Width(), tic.Height(), static_cast<u32>(tic.format.Value()));
-            }
-        }
-        const auto& bt = regs.blend_per_target[0];
-        LOG_INFO(HW_GPU, "  blend enable {} per-target {} global op {} src {:#x} dst {:#x} | rt0 op {} src {:#x} dst {:#x} alpha {:#x}/{:#x} mask {:#x}",
-                 regs.blend.enable[0], regs.blend_per_target_enabled,
-                 static_cast<u32>(regs.blend.color_op), static_cast<u32>(regs.blend.color_source),
-                 static_cast<u32>(regs.blend.color_dest), static_cast<u32>(bt.color_op),
-                 static_cast<u32>(bt.color_source), static_cast<u32>(bt.color_dest),
-                 static_cast<u32>(bt.alpha_source), static_cast<u32>(bt.alpha_dest),
-                 regs.color_mask[0].raw);
-    }
-    // EDEN_NX2_SKIP_VS=<address>[,<address>...]: drop draws using those vertex shaders (debug aid).
-    static const std::vector<u64> skip_list = [] {
-        std::vector<u64> list;
-        if (const char* value = std::getenv("EDEN_NX2_SKIP_VS")) {
-            for (char* end = nullptr; *value; value = *end ? end + 1 : end) {
-                list.push_back(std::strtoull(value, &end, 16));
-                if (end == value) break;
-            }
-        }
-        return list;
-    }();
-    if (!skip_list.empty()) {
-        const auto& regs = maxwell3d->regs;
-        const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
-        if (std::find(skip_list.begin(), skip_list.end(), vs) != skip_list.end()) return;
-    }
-    // EDEN_NX2_RT_TRACE: log the first draw to every distinct colour target (debug aid).
-    if (static const bool trace = std::getenv("EDEN_NX2_RT_TRACE") != nullptr; trace) {
-        static std::set<std::tuple<GPUVAddr, u32, u32, u64, u64>> seen;
-        const auto& regs = maxwell3d->regs;
-        const auto& rt = regs.rt[0];
-        const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
-        const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-        const auto key = std::make_tuple(rt.Address(), rt.width, static_cast<u32>(rt.format), vs, ps);
-        if (rt.width >= 640 && seen.size() < 600 && seen.insert(key).second) {
-            LOG_INFO(HW_GPU, "nx2 draw target {:#x} {}x{} format={:#x} vs={:#x} ps={:#x} blend={} (pairs so far {})",
-                     rt.Address(), rt.width, rt.height, static_cast<u32>(rt.format), vs, ps,
-                     regs.blend.enable[0], seen.size());
         }
     }
     PrepareDraw(is_indexed, [this, is_indexed, instance_count] {
@@ -826,14 +555,6 @@ void RasterizerVulkan::DrawTexture() {
 
 void RasterizerVulkan::Clear(u32 layer_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Clear};
-    if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
-        const auto& regs = maxwell3d->regs;
-        LOG_INFO(HW_GPU, "after upscale: clear rt0 {:#x} {}x{} fmt {:#x} surface {:#x} colour {} {} {} {}",
-                 regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height,
-                 static_cast<u32>(regs.rt[0].format), regs.clear_surface.raw, regs.clear_color[0],
-                 regs.clear_color[1], regs.clear_color[2], regs.clear_color[3]);
-    }
-    TraceWindowTarget(*maxwell3d, *gpu_memory, "clear", layer_count);
     FlushWork();
     gpu_memory->FlushCaching();
 

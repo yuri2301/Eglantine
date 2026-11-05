@@ -1,0 +1,13 @@
+<!--
+SPDX-FileCopyrightText: 2026 Eden Emulator Project
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
+<RCC>
+    <qresource prefix="icons/pitoco_silver">
+        <file alias="index.theme">icons/index.theme</file>
+    </qresource>
+    <qresource prefix="pitoco_silver">
+        <file>style.qss</file>
+    </qresource>
+</RCC>

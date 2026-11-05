@@ -84,6 +84,34 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
   - `EDEN_NX2_GPU_PROFILE=0/1`
   - `EDEN_NX2_KEEP_SETTINGS`
 
+## Ocarina on 0.1.9 (MSVC, Parallel GPU execution)
+- AV1 intro plays (libdav1d). Gameplay starts at ~255 s: draws jump from 120/s to 13,000-28,000/s, so the game draws its 3D scene, but nothing reaches the screen.
+- **Likely cause: untracked global memory.** "Storage buffer failed to track, using global memory fallbacks": 1,402 shaders while loading the cache, 271 more as gameplay starts (MKW: 0). The fallback (`DefineGlobalMemoryFunctions`) only looks in the storage buffers the program binds; an address outside them reads zero. Ocarina's 3D shaders read data through pointers the tracker can't follow, so their inputs come back as zeros. The log now names the program and the expression the address is built from (once per program), to tell a tracker gap (small fix) from pointers loaded from memory (needs guest GPU addresses translated in shaders: a page table plus buffer device addresses).
+- Smaller: 23 draws skipped for rejected programs (sign extend 4, scratch registers 2, opcode 0x243 and others); 8 matrix-multiply programs (the upscaler) replaced by the copy fallback.
+- PGO run (title screen, stopped at ~50 s): crash on close, a use-after-free in `Scheduler::SubmitExecution` from `~RasterizerVulkan` during `ShutdownMainProcess`. The split is already stopped there, so it's not the race. Non-critical.
+
+## MKW on 0.1.9 (PGO, first clean A/B: no switches in effect)
+- Compatibility (51-436 s, more menu time): 25.7 fps mean, races 13-27 fps, 14 frames over 100 ms per 600 frames.
+- Parallel GPU execution (437-1960 s): 25.3 fps mean, races a steady 20-28 fps, 6 frames over 100 ms per 600 frames. The user: playable, compatibility unplayable; made the default and renamed (was "Pitoco mode", setting `parallel_gpu_execution`).
+- **The spikes follow pipeline builds.** 1,639 graphics pipelines built on the GPU thread during play (~3.9 ms each, up to 93 ms); windows with 0-10 builds had 0-2 frames over 100 ms, those with 130-200 had 26-37. Sources: 1,473 pipelines in the disk cache not built at boot (only those in the "used" list of recent sessions are), and eviction (unused for 18,000 frames: 945 destroyed at 1,201 s, ~400 of them built again in later races). Each built pipeline holds ~0.45 MB of driver memory, and RAM was at 89-97% (the game process 8.2-11 GiB, the rest of the PC 4.7-7.1 GiB), page faults 2,400-77,000/s.
+
+## Crashes (critical: ends normal play of MKW or Ocarina, an emulator bug, fixed first; non-critical: rare path, exit, dropped game or missing feature, logged and deferred)
+| Crash | Class | Where | State |
+| --- | --- | --- | --- |
+| Split race: the front records into the Vulkan command buffer while the back's idle hook submits it (`QueryCacheRuntime::Barriers` Ocarina, `CopyBuffer` via `FlushGpuWrittenCommands` DKB, `SubmitExecution` via `FlushDeferred` MKW Grand Prix at 1,071 s) | Critical | `gpu_split.cpp` idle hook vs front after `Drain` | Fixed in 0.1.9 (`HoldBack`); all three reports were build 18. Confirm with MKW on the 0.1.9 MSVC build |
+| Ocarina after the intro cutscene | Critical (no image, not a crash on 0.1.9) | untracked global memory reads zero (see "Ocarina on 0.1.9") | 0.1.9 MSVC: no crash in 314 s; the 3D is drawn but its inputs read zero |
+| Crash on close | Non-critical | exit: `~RasterizerVulkan` -> `Scheduler::Finish` -> `SubmitExecution` (use-after-free, split already stopped) | Deferred |
+| Unimplemented services logged as Critical (`nx2:vi2` 201, `IGraphicsScaleController` 1050, `IGeneralService` 101, `nx2:gsv` 903, `prepo:u` 10500) | Non-critical | services | Stubbed, they don't end the game |
+| No AV1 in the PGO build (Ocarina's intro video) | Non-critical | MinGW FFmpeg | Use the MSVC build for Ocarina |
+| Donkey Kong Bananza | — | — | Development halted (user, 2026-11-05) |
+
+## Code review, 2026-11-05 (in code, not built)
+- Removed the Bananza indirect-reset fix (`TryNx2IndirectReset`, `IsIndirectResetShader`, `indirect_reset.h` and its test, the per-program hash): it ran a check on every non-indexed draw of every game and only ever fired in Bananza.
+- Removed debug traces from the draw and clear paths (`TraceWindowTarget`, CB24 trace with Bananza shader addresses, `EDEN_NX2_TRACE_VS`, after-upscale trace, `EDEN_NX2_SKIP_VS`, `EDEN_NX2_RT_TRACE`), from the upscale fallback (image sampling with GPU downloads, `EDEN_NX2_UPSCALE_SOURCE`) and from every macro call (`EDEN_NX2_MME_LOG`, `EDEN_NX2_MME_RECORD`, `EDEN_NATIVE_FRAME_CAPTURE`).
+- Added: per-method time breakdown of the back thread in `pitoco_dev.txt` (profiler on).
+- Checked: every front-side use of the back's state after a drain is now covered by `HoldBack`; `ReadGpuWrittenCommandList` takes its own lock; flush and invalidate requests run on the back in order.
+- Measured, not a cost: the remaining `getenv` switches are read once into statics (a few ns per check). They stay until the strip in plan step 2.
+
 ## Overview after build 18 (Pitoco 0.1.8)
 - **No A/B so far was real.** The release's `nx2_switches.txt` set `EDEN_NX2_SPLIT=2`, so "legacy" ran the GPU split too. Emptied for 0.1.9; the switches in effect are listed at load ("Developer switches in effect").
 - **MKW has been ~21-24 fps on average since build 15**, 15-20 fps in races, ~40 in menus, in every mode. In a 12 fps race second: the GPU thread's method processing 655 ms/s on the back (1.22M method calls/s; 4.84M 3D register writes of which 2.59M rewrite the same value; 32k draws/s at ~20 us each), the front 524 ms/s pushing plus 235 ms/s waiting for the back (264 ms/s on writers of GPU-built lists). Guest CPU cores ~55% busy: the game waits for the GPU emulation.
@@ -91,10 +119,10 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - **Both crashes (Ocarina, DKB) were one race** between the split's two threads (front records after a drain while the back's idle hook submits). Fixed for 0.1.9.
 - **122 `EDEN_NX2_*` switches** and 11 rig settings: experiments that each keep a branch alive.
 
-## Plan: one Pitoco mode (user, 2026-11-05)
+## Plan: one mode, Parallel GPU execution (user, 2026-11-05)
 1. **0.1.9 (in code):** race fix, VRAM revert, empty switches file, developer log `pitoco_dev.txt` (user log keeps warnings, errors, general lines) with page faults/s, crash dump fix, upscale reuse within one network, version naming `0.X.Y beta`.
 2. **Strip:** remove the 122 switches and the rig settings that are experiments; Pitoco mode = what ran best (legacy + split), every remaining choice fixed in code; legacy = Eden unchanged.
-3. **Thin the GPU path (the measured cost):** drop same-value register writes at the front before the ring; GPU-built draw lists drawn by the GPU itself (`vkCmdDrawIndexedIndirect`, no CPU read); per draw only the state groups that changed.
+3. **Thin the GPU path (the measured cost):** same-value writes are already dropped at the front (`FrontWrite`), so first measure which executable methods the back's 655 ms/s of method time goes to (per-method breakdown in `pitoco_dev.txt`, after 0.1.9); GPU-built draw lists drawn by the GPU itself (`vkCmdDrawIndexedIndirect`, no CPU read); per draw only the state groups that changed.
 4. **GPU-resident images (an option, off by default):** render targets the CPU never reads stay on the host GPU only, without guest-memory copies or page tracking. ASTC still decodes (RTX has no ASTC hardware) and textures still need Vulkan images.
 5. **Memory:** guest memory committed on first touch instead of 14 GiB up front.
 6. **Games:** Ocarina's gameplay shaders (F2I, warp sum, gathers, sign extend, funnel shift, scratch registers, its own network); DKB's T-pose (10 shaders fall back to global memory: storage buffers not tracked).

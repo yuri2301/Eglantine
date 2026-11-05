@@ -1,0 +1,8 @@
+[Icon Theme]
+Name=pitoco_silver
+Comment=Pitoco Silver (white and silver, Web 2.0)
+Inherits=colorful
+Directories=16x16
+
+[16x16]
+Size=16

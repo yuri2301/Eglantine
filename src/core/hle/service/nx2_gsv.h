@@ -1740,7 +1740,7 @@ private:
         static const char* const frames_ahead_env = std::getenv("EDEN_NX2_FRAMES_AHEAD");
         const int frames_ahead = frames_ahead_env != nullptr
                                      ? (frames_ahead_env[0] == '1' ? 1 : 0)
-                                     : (Settings::PitocoActive() &&
+                                     : (Settings::ParallelExecutionActive() &&
                                                 Settings::values.nx2_frames_ahead.GetValue()
                                             ? 1
                                             : -1);
@@ -1801,7 +1801,7 @@ private:
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600);
                 m_stats = {.last_present = entered};
-                if (Settings::PitocoActive()) {
+                if (Settings::ParallelExecutionActive()) {
                     Common::UpdateKeepInRam();
                 }
             }

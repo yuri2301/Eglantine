@@ -378,12 +378,14 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     // Ui Games list
 
     // Switch 2 rig (this fork)
-    INSERT(Settings, pitoco_mode, tr("Pitoco mode (experimental)"),
-           tr("Runs Switch 2 games on Pitoco's paths for this PC, decided as one set when a game "
-              "starts: the GPU work split over two threads, high priority, and RAM and VRAM "
-              "that follow the workload (the game is kept in RAM while the PC has memory free, "
-              "and textures use the VRAM the driver reports as free). Off runs them the way Eden "
-              "and Eglantine do. Your other settings are never changed."));
+    INSERT(Settings, parallel_gpu_execution, tr("Parallel GPU execution"),
+           tr("Pitoco's way of running Switch 2 games, decided when a game starts: the game's GPU "
+              "commands are processed on two threads in parallel (one reads the command lists and "
+              "runs the macros, the other applies the state and records the draws), the emulator "
+              "runs at high priority, and the game's memory is kept in RAM while the PC has RAM "
+              "free.
+Off (compatibility): Switch 2 games run the way Eden runs them, on one GPU "
+              "thread. Your other settings are never changed."));
     INSERT(Settings, nx2_rig_profile, tr("Apply the rig profile to Switch 2 games"),
            tr("When a Switch 2 game starts, settings you have not changed yourself take the values "
               "tuned for this PC (RTX 3060 12 GB, i5-10400F, 16 GB RAM): asynchronous shaders on, "

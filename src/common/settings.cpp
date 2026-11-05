@@ -238,11 +238,11 @@ bool CurrentProgramIsSwitch2() {
 
 static std::atomic_bool pitoco_active = false;
 
-void SetPitocoActive(bool active) {
+void SetParallelExecutionActive(bool active) {
     pitoco_active.store(active, std::memory_order_relaxed);
 }
 
-bool PitocoActive() {
+bool ParallelExecutionActive() {
     return pitoco_active.load(std::memory_order_relaxed);
 }
 

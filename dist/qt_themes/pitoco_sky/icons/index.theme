@@ -1,0 +1,8 @@
+[Icon Theme]
+Name=pitoco_sky
+Comment=Pitoco Sky (sky blue, Web 2.0)
+Inherits=colorful
+Directories=16x16
+
+[16x16]
+Size=16

@@ -5,7 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -442,6 +444,24 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
     return candidates;
 }
 
+/// The expression an untracked address is built from, a few levels deep (developer log).
+std::string DescribeAddress(const IR::Value& value, int depth) {
+    if (value.IsImmediate()) {
+        return value.Type() == IR::Type::U32 ? fmt::format("{:#x}", value.U32()) : "imm";
+    }
+    const IR::Inst* const inst{value.InstRecursive()};
+    std::string text{IR::NameOf(inst->GetOpcode())};
+    if (depth == 0 || inst->NumArgs() == 0) {
+        return text;
+    }
+    text += '(';
+    for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+        text += arg == 0 ? "" : ", ";
+        text += DescribeAddress(inst->Arg(arg), depth - 1);
+    }
+    return text + ')';
+}
+
 /// Collects the storage buffer used by a global memory instruction and the instruction itself
 void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, Environment& env) {
     // NVN puts storage buffers in a specific range, we have to bias towards these addresses to
@@ -513,8 +533,19 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         // If it fails, track without a bias
         storage_buffer = cached_track(nullptr, info.unbiased_tracks);
         if (!storage_buffer) {
-            // If that also fails, use NVN fallbacks
-            LOG_WARNING(Shader, "Storage buffer failed to track, using global memory fallbacks");
+            // If that also fails, use NVN fallbacks: at run time an address outside the buffers
+            // the program binds reads zero. Once per program, where the address comes from.
+            static std::mutex logged_mutex;
+            static std::unordered_set<u64> logged;
+            const u64 key{(u64{env.StartAddress()} << 8) | static_cast<u64>(env.ShaderStage())};
+            std::scoped_lock lock{logged_mutex};
+            if (logged.insert(key).second) {
+                LOG_WARNING(Shader,
+                            "Storage buffer failed to track (program {:#x}, stage {}), using "
+                            "global memory fallbacks; low address = {}",
+                            env.StartAddress(), static_cast<u32>(env.ShaderStage()),
+                            DescribeAddress(low_addr, 4));
+            }
             return;
         }
         LOG_DEBUG(Shader, "Storage buffer tracked without bias, index {} offset {}",

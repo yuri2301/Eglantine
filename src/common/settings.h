@@ -646,9 +646,10 @@ struct Values {
 #endif
 
     // Switch 2 rig (this fork: RTX 3060 12 GB, i5-10400F 6C/12T, 16 GB RAM) //
-    // Pitoco mode (experimental): the paths tuned for this PC. Off runs Switch 2 games the way
-    // Eden and Eglantine do; the rig settings below apply only while it is on.
-    SwitchableSetting<bool> pitoco_mode{linkage, true, "pitoco_mode", Category::Nx2Rig};
+    // Parallel GPU execution (Pitoco's default): GPU commands on two threads, high priority, game
+    // memory kept in RAM. Off runs Switch 2 games the way Eden does; the rig settings below apply
+    // only while it is on.
+    SwitchableSetting<bool> parallel_gpu_execution{linkage, true, "parallel_gpu_execution", Category::Nx2Rig};
     SwitchableSetting<bool> nx2_rig_profile{linkage, false, "nx2_rig_profile", Category::Nx2Rig};
     SwitchableSetting<bool> nx2_honor_cpu_clock{linkage, false, "nx2_honor_cpu_clock",
                                                 Category::Nx2Rig};
@@ -1026,10 +1027,10 @@ u64 GetCurrentProgramID();
 void SetCurrentProgramIsSwitch2(bool is_switch2);
 bool CurrentProgramIsSwitch2();
 
-// Pitoco mode for the running game: decided once when it loads (a Switch 2 game with pitoco_mode
-// on) and read by every Pitoco path, so none can see the setting change mid-game.
-void SetPitocoActive(bool active);
-bool PitocoActive();
+// Parallel GPU execution for the running game: decided once when it loads (a Switch 2 game with
+// parallel_gpu_execution on) and read by every path of the mode, so none sees it change mid-game.
+void SetParallelExecutionActive(bool active);
+bool ParallelExecutionActive();
 
 // The ASTC recompression in effect: astc_recompression, unless the renderer picked another one
 // for the running program (the configuration is left as is). The core clears it on load.

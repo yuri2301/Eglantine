@@ -29,9 +29,9 @@ void ConfigureNx2Rig::Setup(const ConfigurationShared::Builder& builder) {
     auto& layout = *ui->populate_target->layout();
     std::map<u32, QWidget*> hold{}; // Sorted by id: declaration order in settings.h
 
-    // Pitoco mode decides the rig paths as one set (core.cpp, Settings::PitocoActive): only the
+    // Parallel GPU execution decides the rig paths as one set (core.cpp, Settings::ParallelExecutionActive): only the
     // switch itself and the options that are not tuning are shown.
-    const std::vector<u32> shown{Settings::values.pitoco_mode.Id(),
+    const std::vector<u32> shown{Settings::values.parallel_gpu_execution.Id(),
                                  Settings::values.nx2_honor_cpu_clock.Id(),
                                  Settings::values.nx2_gpu_profiler.Id()};
     for (auto* setting : Settings::values.linkage.by_category[Settings::Category::Nx2Rig]) {

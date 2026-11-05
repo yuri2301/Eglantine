@@ -677,7 +677,7 @@ void SetProcessKeepInRam(bool keep) {
 
 void UpdateKeepInRam() {
 #ifdef _WIN32
-    // Pitoco mode: the working set minimum follows the RAM the PC has free instead of a fixed
+    // Parallel GPU execution: the working set minimum follows the RAM the PC has free instead of a fixed
     // 60%. Title 1 on 16 GB sat at 87-97% host RAM with 0.4-2 GB free while the rest of the PC
     // held 6-8 GB: raised while there is room (the game's pages stay resident through heavy
     // scenes), lowered by 1 GiB at a time when less than 1 GiB is free, so Windows takes this

@@ -845,7 +845,6 @@ void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor
     }
 }
 
-std::atomic<u32> g_nx2_trace_draws_after_upscale{};
 
 // Fire Emblem: Fortune's Weave's first DLSS pass (rejected, before the network) has the input colour
 // at cbuf0+0x278, its motion vectors (R16G16 float, the input's size) at +0x290, its depth (Z32, the
@@ -1047,44 +1046,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         .src_x1 = static_cast<s32>(input->Width()),
         .src_y1 = static_cast<s32>(input->Height()),
     };
-    // Debug: does the input hold anything? Download it once and count non-zero words.
-    static const u32 sample_at = [] {
-        const char* value = std::getenv("EDEN_NX2_SAMPLE_AT");
-        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 20U;
-    }();
-    if (static u32 sampled{}; sampled++ == sample_at) {
-        const auto sample = [&](const Texture::TICEntry& tic) {
-            const u64 size = u64{tic.Width()} * tic.Height() * 4;
-            if (const auto device = memory_manager.GpuToCpuAddress(tic.Address())) {
-                rasterizer->FlushRegion(*device, size, VideoCommon::CacheType::All);
-            }
-            u32 nonzero{}, samples{};
-            u64 sum{};
-            for (u64 offset = 0; offset < size; offset += 4096 + 4) {
-                const u32 word = memory_manager.Read<u32>(tic.Address() + offset);
-                ++samples;
-                nonzero += word != 0;
-                sum += (word & 0x3ff) + ((word >> 10) & 0x3ff) + ((word >> 20) & 0x3ff);
-            }
-            LOG_INFO(HW_GPU, "Upscale fallback image {:#x}: {}/{} sampled words non-zero, mean channel {}",
-                     tic.Address(), nonzero, samples, samples ? sum / (samples * 3) : 0);
-        };
-        sample(*input);
-        sample(*output);
-    }
     auto source = surface(*input);
-    // EDEN_NX2_UPSCALE_SOURCE=<gpu address>: blit from another same-sized image (debug aid).
-    if (static const u64 override_source = [] {
-            const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE");
-            return value ? std::strtoull(value, nullptr, 16) : 0ULL;
-        }();
-        override_source != 0) {
-        source.addr_upper = static_cast<u32>(override_source >> 32);
-        source.addr_lower = static_cast<u32>(override_source);
-        if (const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE_FORMAT")) {
-            source.format = static_cast<RTFormat>(std::strtoul(value, nullptr, 16));
-        }
-    }
     // Fortune's Weave: a temporal upscale along its motion vectors that undoes this frame's camera
     // jitter (both from the frame's first DLSS pass) and accumulates the frames as DLSS would.
     // EDEN_NX2_TEMPORAL_UPSCALE=0 blits instead.
@@ -1104,28 +1066,6 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     };
     const bool done = upscale_temporally() ||
                       rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
-    if (static u32 checked{}; checked++ == sample_at) {
-        const u64 size = u64{output->Width()} * output->Height() * 4;
-        if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {
-            rasterizer->FlushRegion(*device, size, VideoCommon::CacheType::All);
-        }
-        u32 nonzero{}, samples{}, changes{}, last{};
-        for (u64 offset = 0; offset < size; offset += 4096 + 4) {
-            const u32 word = memory_manager.Read<u32>(output->Address() + offset);
-            ++samples;
-            nonzero += word != 0;
-            changes += word != last;
-            last = word;
-        }
-        LOG_INFO(HW_GPU, "Upscale fallback output after blit: {}/{} non-zero, {} changes", nonzero, samples,
-                 changes);
-    }
-    // Debug: trace the draws that follow one upscale (EDEN_NX2_RT_TRACE_AFTER_UPSCALE).
-    static const u32 trace_at = [] {
-        const char* value = std::getenv("EDEN_NX2_TRACE_AFTER_UPSCALE");
-        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 30U;
-    }();
-    if (static u32 count{}; ++count == trace_at) g_nx2_trace_draws_after_upscale = 40;
     static u32 logged{};
     if (logged++ < 4) {
         LOG_INFO(HW_GPU, "Upscale fallback {:#x} {}x{} block {}/{}/{} -> {:#x} {}x{} block {}/{}/{} levels {}: {}",

@@ -1348,48 +1348,10 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
     if (native_turing) {
         maxwell3d.RefreshParameters();
-        const auto context = reinterpret_cast<std::uintptr_t>(this);
-        static std::unordered_set<std::uintptr_t> captured_contexts;
-        static const bool capture = std::getenv("EDEN_NATIVE_FRAME_CAPTURE") != nullptr;
-        if (capture && captured_contexts.insert(context).second) {
-            std::ofstream dump("native-graphics-mme-" + std::to_string(context) + ".bin", std::ios::binary);
-            dump.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
-        }
-        // EDEN_NX2_MME_LOG: log every macro call (runs ~750,000 times a second in title 1).
-        if (static const bool log_calls = std::getenv("EDEN_NX2_MME_LOG") != nullptr; log_calls) {
-            LOG_DEBUG(HW_GPU, "Native MME context={:#x}", context);
-            LOG_DEBUG(HW_GPU, "Native MME start={:#x}, parameters={}, data={:08x}", method, parameters.size(), fmt::join(parameters, ","));
-        }
         // Reused between calls (a macro never calls another: methods >= 0xe00 are refused below);
         // filled only for calls that are interpreted.
         auto& fifo = native_fifo;
         native_interpreter.active_dram = &maxwell3d.GetNativeDataRam();
-        // EDEN_NX2_MME_RECORD=<file>: write the first 200000 calls (u32 start, u32 count, the
-        // parameters) and then the macro code to <file>.code, to check interpreter changes
-        // offline against the previous interpreter. EDEN_NX2_MME_RECORD_SKIP=<n>: skip the first
-        // n calls (title 1 makes ~1,000,000 a second in 3D scenes).
-        if (static const char* const record_path = std::getenv("EDEN_NX2_MME_RECORD"); record_path != nullptr) {
-            static std::ofstream record{record_path, std::ios::binary};
-            static u32 recorded{};
-            static u64 to_skip = [] {
-                const char* value = std::getenv("EDEN_NX2_MME_RECORD_SKIP");
-                return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
-            }();
-            if (to_skip > 0) {
-                --to_skip;
-            } else if (recorded < 200000) {
-                const u32 count = static_cast<u32>(parameters.size());
-                record.write(reinterpret_cast<const char*>(&method), sizeof(method));
-                record.write(reinterpret_cast<const char*>(&count), sizeof(count));
-                record.write(reinterpret_cast<const char*>(parameters.data()), parameters.size_bytes());
-                if (++recorded == 200000) {
-                    record.flush();
-                    std::ofstream code{std::string{record_path} + ".code", std::ios::binary};
-                    code.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
-                    LOG_INFO(HW_GPU, "Recorded 200000 macro calls to {}", record_path);
-                }
-            }
-        }
         // A method write of the macro (also what a remembered call replays).
         bool read_memory = false;
         const auto emit = [&](u32 address, u32 value) {

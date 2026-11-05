@@ -62,11 +62,13 @@ enum class Theme {
     MidnightBlue,
     MidnightBlueColorful,
     Pitoco,
+    PitocoSky,
+    PitocoSilver,
 };
 
 static constexpr Theme default_theme{Theme::Pitoco};
 
-using Themes = std::array<std::pair<const char*, const char*>, 7>;
+using Themes = std::array<std::pair<const char*, const char*>, 9>;
 extern const Themes themes;
 
 struct GameDir {
