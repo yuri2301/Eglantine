@@ -75,6 +75,7 @@ enum class ArbitrationType : u32 {
     WaitIfLessThan = 0,
     DecrementAndWaitIfLessThan = 1,
     WaitIfEqual = 2,
+    WaitIfEqual64 = 3, ///< Switch 2: compares a 64-bit value (nn::os::WaitForAddress)
 };
 
 enum class YieldType : s64 {

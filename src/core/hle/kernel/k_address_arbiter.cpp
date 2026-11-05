@@ -303,7 +303,7 @@ Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement,
     return cur_thread->GetWaitResult();
 }
 
-Result KAddressArbiter::WaitIfEqual(uint64_t addr, s32 value, s64 timeout) {
+Result KAddressArbiter::WaitIfEqual(uint64_t addr, s64 value, bool is_64, s64 timeout) {
     // Prepare to wait.
     KThread* cur_thread = GetCurrentThreadPointer(system.Kernel());
     KHardwareTimer* timer{};
@@ -319,10 +319,16 @@ Result KAddressArbiter::WaitIfEqual(uint64_t addr, s32 value, s64 timeout) {
         }
 
         // Read the value from userspace.
-        s32 user_value{};
-        if (!ReadFromUser(system.Kernel(), std::addressof(user_value), addr)) {
-            slp.CancelSleep();
-            R_THROW(ResultInvalidCurrentMemory);
+        s64 user_value{};
+        if (is_64) {
+            user_value = static_cast<s64>(GetCurrentMemory(system.Kernel()).Read64(addr));
+        } else {
+            s32 user_value_32{};
+            if (!ReadFromUser(system.Kernel(), std::addressof(user_value_32), addr)) {
+                slp.CancelSleep();
+                R_THROW(ResultInvalidCurrentMemory);
+            }
+            user_value = user_value_32;
         }
 
         // Check that the value is equal.

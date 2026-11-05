@@ -47,6 +47,7 @@ Last updated: 2026-11-04, after build 14.
 | 14 | Memory breakdown line (dynarmic counts committed code memory) | **Long stretches locked 60 fps, stretches locked 30 (game's choice, back ~81% busy), heavy free roam 20–40 ms.** Game memory 9.3 of 9.8 GB; emulator's own RAM extras < 1 GB; VRAM 5.8 GB; process RAM 4.3 GB (Windows pushed the rest out) |
 | 15 | Memory line: textures/buffers report the caches' own bytes; Rig option "Keep the game in RAM" (`nx2_keep_in_ram`, off): soft minimum working set of 60% of RAM, at most all but 4 GB (9.7 GB on this PC) | 3 MKW sessions (dynamic FPS on, sync core speed on): frames 28–55 ms, far fewer 100 ms hitches (0–2 per 600 frames, was 3–7). P-switch: draws fell from ~60k/s to 3–6k/s and fps hit target at once. Kart slower than the map at times. DKB: purple screen (wrong upscale pair). Host RAM still 95–99% |
 | 16 | DKB: the upscale fallback takes only frame-sized pairs (same aspect, ≥320x180, ≤4x) and the largest output, scans cbuf0+0x80..0x400 and logs the candidates once per program; the back thread's method calls timed (1 in 32) so "other" shrinks to what is really unzoned; memory line reset at each game; graphics pipelines evicted after 18,000 unused frames (was 9,000) and the log counts evicted ones built again | — (not tested yet) |
+| 17 | Kernel: `svcWaitForAddress` wait type 3 (WaitIfEqual64, 64-bit compare on an 8-byte-aligned address); the 64-bit SVC passes the value as s64 | — (not tested yet) |
 
 Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps average, ~11 hitches per 600 frames. Ours (build 10): ~31 fps average, ~2 hitches per 600 frames.
 
@@ -80,6 +81,7 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 
 ## Next steps, in order
 1. **Build 16 (done, not tested):** DKB with the new upscale fallback (send the log: the "Upscale candidate" lines show which images it saw); in MKW, read the back thread's "method" time and what is left in "other", and the "built again" count in the eviction lines.
+   - **Build 17 (done, not tested):** boot Ocarina of Time (0400486024DEC000, update 2.0.0) and send the log: the next stop, if any, is past the 64-bit wait.
 2. **GPU reads the draw lists directly:** when a draw macro's parameters come from a GPU-written GP entry in the indirect-draw layout above, issue `vkCmdDrawIndexedIndirect` from the buffer cache's buffer on the back. No CPU readback, no drain, no stale lists. Make it generic (pattern based), not MKW-only.
 3. **Native GPU macros:** recognise NVN's common Turing MME macros by code hash and run native C++ instead of the macro JIT on the front (~1.1M macro calls/s). Generic for every game on the same NVN version.
 4. **Spread the back's draw preparation** across spare cores (read handles, image views, buffer updates, stage-buffer binds ≈ 230 ms/s), or use device-generated commands (VK_EXT_device_generated_commands) for groups of draws.
@@ -101,6 +103,13 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - **Pipelines:** 600 evicted at once after 9,000 frames at 1403 s, then 6–181 every ~25 s.
 - **DKB:** gameplay-level work (~25k draws/s) behind a purple screen. The game's tensor (HMMA) upscale program 0x2116149400 was refused and the fallback blitted a 4x4 image into a 360x202 one, so the real output was never written.
 - The memory line kept the previous game's figures until the new one drew its first frame (fixed in build 16).
+
+## Ocarina of Time (0400486024DEC000, NUP package, update v131072 = 2.0.0)
+- Engine "Owl" (TotK family: agl/gsys, Phive, Bake, Banc), Havok 2025.2 (physics, animation, cloth, AI), CRIWARE audio, NintendoWare G3d2 22.2.8, Vfx3, sead, NPLN 1.55.1 (gRPC, OpenSSL, libcurl). 738 `nvn*` entry names (MKW/DKB: 700).
+- Upscaling: its own DLSS (`nvnCommandBufferEvaluateDlss`, `UpscaleDynamic`, dynamic resolution) and NDSR with SMAA 2.3.2; DLSS may hit the same tensor-program refusal as DKB.
+- The main NSO is ZBIC-compressed (zstd variant, kinnay/zbic); sdk and subsdk0 are LZ4.
+- Build 15 log: boots, presents two frames at 29.4–29.6 s, then aborts (2001-0120, svcBreak). Backtrace: `std::__libcpp_atomic_wait` → `nn::os::WaitForAddress` (sdk+0x16cd80: svc 0x34 with arbitration type 3, the full 64-bit value in x2, infinite timeout; anything but success or InvalidState aborts) → `nn::diag::detail::Abort`. The emulator answered InvalidEnumValue. Fixed in build 17. `nn::os::SignalToAddress` uses plain Signal (type 0).
+- `tools/svc_generator.py` still describes WaitForAddress with an int32 value; svc.cpp/svc.h were edited by hand (64-bit wrapper only), so regenerating would undo it.
 
 ## DKB main executable (base/exefs/main, build id a1dd7480bca7b6e8...)
 - 25.5 MiB code, 5.9 MiB rodata, 2.8 MiB data (MKW: 40.2 / 8.5 / 2.9). Internal name SilverStar, CSPGO build, platform "Ounce".
