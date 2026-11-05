@@ -376,7 +376,12 @@ struct System::Impl {
         // value differs from Eden's default; both are kept. The rig value is a per-game value of
         // this session only (RestoreGlobalState drops it). EDEN_NX2_KEEP_SETTINGS=1 skips it.
         static const bool keep_settings = std::getenv("EDEN_NX2_KEEP_SETTINGS") != nullptr;
+        // Pitoco mode is decided here, once per game, and every Pitoco path reads this decision.
         const bool pitoco_mode = switch2_program && Settings::values.pitoco_mode.GetValue();
+        Settings::SetPitocoActive(pitoco_mode);
+        LOG_INFO(Core, "Pitoco mode: {}", pitoco_mode       ? "on"
+                                          : switch2_program ? "off (legacy)"
+                                                            : "off (not a Switch 2 program)");
         if (pitoco_mode && !keep_settings && Settings::values.nx2_rig_profile.GetValue()) {
             const auto suggest = [](auto& setting, auto value, const char* name) {
                 if (!setting.UsingGlobal()) {
@@ -419,8 +424,10 @@ struct System::Impl {
             // Presentation on its own thread, so the GPU thread does not wait for the swapchain.
             suggest(Settings::values.async_presentation, true, "async_presentation");
         }
-        Common::SetProcessHighPriority(pitoco_mode && Settings::values.nx2_high_priority.GetValue());
-        Common::SetProcessKeepInRam(pitoco_mode && Settings::values.nx2_keep_in_ram.GetValue());
+        // Pitoco mode runs at high priority and keeps the game in RAM, the working set minimum
+        // then following free RAM (Common::UpdateKeepInRam, every 600 frames).
+        Common::SetProcessHighPriority(pitoco_mode);
+        Common::SetProcessKeepInRam(pitoco_mode);
         Common::Nx2Memory::Reset();
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant

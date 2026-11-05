@@ -1133,7 +1133,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (u64{insn.Bits(81, 3)} << 48));
             break;
         }
-        case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32 (op in bits 87-89), register address.
+        case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU (op in bits 87-89), register address.
+            // Type in bits 73-75 as Maxwell's RED (bits 20-22): U32, S32 or F32.FTZ.RN (ADD only;
+            // Ocarina of Time). The 64-bit types take a register pair and are not handled.
+            const u32 red_type = insn.Bits(73, 3);
+            if (red_type != 0 && red_type != 1 && !(red_type == 3 && insn.Bits(87, 3) == 0))
+                return fail(index, "native global reduction mode");
+            insn.words[2] &= ~0x00000e00U;
             if ((insn.words[2] & ~0x0380003fU) == 0x0c10e100 && insn.Bits(24, 8) == 255) {
                 // [URa + offset]: a uniform 64-bit address with a signed byte offset.
                 const u32 address = uniform_register(insn.Bits(64, 6));
@@ -1141,14 +1147,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 if (address == ~0U || (address & 1) || offset < -0x80000 || offset > 0x7ffff)
                     return fail(index, "native global reduction uniform address");
                 emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) | (u64{address} << 8) |
-                     (u64{insn.Bits(87, 3)} << 23) | (u64{static_cast<u32>(offset) & 0xfffff} << 28) |
+                     (u64{red_type} << 20) | (u64{insn.Bits(87, 3)} << 23) |
+                     (u64{static_cast<u32>(offset) & 0xfffff} << 28) |
                      (u64{1} << 48));
                 break;
             }
             if ((insn.words[2] & ~0x03800000U) != 0x0010e100 || insn.Bits(40, 24) || (insn.Bits(24, 8) & 1))
                 return fail(index, "native global reduction mode");
             emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) |
-                (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(87, 3)} << 23) | (u64{1} << 48));
+                (u64{insn.Bits(24, 8)} << 8) | (u64{red_type} << 20) | (u64{insn.Bits(87, 3)} << 23) |
+                (u64{1} << 48));
             break;
         }
         case 0x2bd: // UFLO.U32, the highest set-bit index (.SH, bit 74: its shift amount).
@@ -2157,30 +2165,46 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
             // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
             const bool offsets = insn.Bits(76, 1) != 0;
-            if (insn.Bits(61, 3) != 1 || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
-                (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
+            // Dimension 1 is 2D; 5 is ARRAY_2D (layer, x, y; Ocarina of Time's gathers), Maxwell
+            // type 3 with the layer first among the coordinates, as for TEX.
+            const u32 dimension = insn.Bits(61, 3);
+            const u32 coordinates = dimension == 5 ? 3U : 2U;
+            const u32 count = coordinates + (offsets ? 1U : 0U);
+            const u32 in_a = (count + 1) / 2;
+            if ((dimension != 1 && dimension != 5) || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 ||
+                insn.Bits(59, 1) ||
+                (offsets && (bindless || source_b == 255)) ||
+                (source_a != 255 && source_a + in_a > 246) ||
+                (source_b != 255 && source_b + (count - in_a) > 246) ||
                 insn.Bits(89, 1) || mask == 0 ||
                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
                           : (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
                              (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding))))
                 return fail(index, "native texture gather mode");
             if (!bindless) result.required_texture_buffer = binding;
-            // Two coordinates: x in Ra, y in Rb (the coordinate list splits evenly across them);
-            // with an offset, x and y in Ra, Ra+1 and the offset in Rb.
-            const u32 y = !offsets ? source_b : source_a == 255 ? 255U : source_a + 1;
-            emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
-            emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{y} << 20));
-            if (offsets) {
-                emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
+            // The values split evenly across Ra and Rb: 2D is x | y, 2D with an offset x, y |
+            // offset, ARRAY_2D layer, x | y (and the offset after y).
+            const auto value = [&](u32 i) -> u32 {
+                if (i < in_a) return source_a == 255 ? 255U : source_a + i;
+                return source_b == 255 ? 255U : source_b + (i - in_a);
+            };
+            for (u32 i = 0; i < coordinates; ++i) {
+                emit(0x5c98000000000000ULL | predicate | (250 + i) | (u64{15} << 39) |
+                     (u64{value(i)} << 20));
             }
+            if (offsets) {
+                emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) |
+                     (u64{value(coordinates)} << 20));
+            }
+            const u64 texture_type = dimension == 5 ? 3U : 2U;
             if (bindless) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
                 emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
-                     (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
+                     (texture_type << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
             } else {
             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) |
-                 (u64{offsets ? 246U : 255U} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+                 (u64{offsets ? 246U : 255U} << 20) | (texture_type << 28) | (u64{mask} << 31) |
                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) |
                  (u64{offsets ? 1U : 0U} << 54) | (u64{insn.Bits(87, 2)} << 56));
             }
@@ -2698,15 +2722,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 // result comes in as the predicate at bits 68-70 (negated by 71), e.g.
                 // ISETP.NE P0 = lo != 0, then ISETP.NE.EX P0 = (hi != 0) OR P0. EQ: high equal
                 // AND low; NE: high different OR low; the orderings: high strictly ordered OR
-                // (high equal AND low). One or two Maxwell ISETPs into the destination; only
-                // the plain form (no second destination, AND with PT) is handled.
+                // (high equal AND low). One or two Maxwell ISETPs into the destination. A
+                // combining predicate other than PT (bits 87-90, op 74-75; Ocarina of Time:
+                // ISETP.NE.U32.AND.EX P1, PT, RZ, UR9, P1, P2) is saved as 0/~0 in R252 first,
+                // since the destination may be that predicate, and combined afterwards.
                 const u32 compare = insn.Bits(76, 3);
                 const u32 destination = insn.Bits(81, 3);
                 const u32 low = insn.Bits(68, 4);
-                if (insn.Bits(84, 3) != 7 || insn.Bits(87, 4) != 7 || insn.Bits(74, 2) != 0 ||
-                    compare == 0 || compare == 7 ||
+                const u32 combining = insn.Bits(87, 4);
+                const u32 combine_op = insn.Bits(74, 2);
+                if (insn.Bits(84, 3) != 7 || combine_op == 3 || compare == 0 || compare == 7 ||
                     (destination != 7 && insn.Bits(12, 3) == destination))
                     return fail(index, "native extended integer comparison mode");
+                const bool combine = destination != 7 && (combining != 7 || combine_op != 0);
+                if (combine) {
+                    emit(0x38a0000000000000ULL | predicate | 252 | (u64{255} << 8) |
+                         (u64{0x7ffff} << 20) | (u64{1} << 56) | (u64{combining ^ 8U} << 39));
+                }
                 const u32 a = operand(0, false), b = operand(1, false);
                 const auto isetp = [&](u32 op, u32 input, u32 combine) {
                     return 0x5b60000000000000ULL | predicate | 7 | (u64{destination} << 3) |
@@ -2722,6 +2754,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 } else {
                     emit(isetp(Eq, low, And));
                     emit(isetp(compare <= 3 ? Lt : Gt, destination, Or));
+                }
+                if (combine) {
+                    // destination = destination (AND, OR, XOR) saved predicate: LOP3 sets Pd
+                    // when the result is nonzero.
+                    constexpr std::array<u32, 3> tables{0xc0, 0xfc, 0x3c};
+                    emit(0x38a0000000000000ULL | predicate | 250 | (u64{255} << 8) |
+                         (u64{0x7ffff} << 20) | (u64{1} << 56) | (u64{destination ^ 8U} << 39));
+                    emit(0x5be0000000000000ULL | predicate | 255 | (u64{250} << 8) |
+                         (u64{252} << 20) | (u64{tables[combine_op]} << 28) | (u64{3} << 36) |
+                         (u64{255} << 39) | (u64{destination} << 48));
                 }
                 break;
             }

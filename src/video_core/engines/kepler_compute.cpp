@@ -961,6 +961,22 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                             regs.code_loc.Address(), handles.size());
             }
         }
+        // A pass with no pair of its own (Donkey Kong Bananza: the first frame, and a second
+        // network program from 168 s on) left the frame unwritten, purple: blit the last pair
+        // that worked instead.
+        static std::optional<std::pair<Texture::TICEntry, Texture::TICEntry>> last_pair;
+        static u64 reused{};
+        if (input && output) {
+            last_pair.emplace(*input, *output);
+        } else if (last_pair) {
+            input = last_pair->first;
+            output = last_pair->second;
+            if (reused++ % 600 == 0) {
+                LOG_INFO(HW_GPU, "Upscale fallback for program {:#x}: no pair of its own, the last "
+                                 "pair reused ({} times)",
+                         regs.code_loc.Address(), reused);
+            }
+        }
     }
     if (!input || !output)
         return false;
@@ -1048,27 +1064,6 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         };
         sample(*input);
         sample(*output);
-        // Every 2560x1440 target the in-game passes draw to (from EDEN_NX2_RT_TRACE).
-        for (const GPUVAddr address : {0x8116a03000ULL, 0x8117ae5000ULL, 0x8114b62000ULL,
-                                       0x8115a63000ULL, 0x8117904000ULL, 0x8114a02000ULL}) {
-            Texture::TICEntry fake = *input;
-            const u64 size = 2560ULL * 1440 * 4;
-            if (const auto device = memory_manager.GpuToCpuAddress(address)) {
-                rasterizer->FlushRegion(*device, size, VideoCommon::CacheType::All);
-            }
-            u32 nonzero{}, samples{}, distinct{};
-            u32 last{};
-            for (u64 offset = 0; offset < size; offset += 4096 + 4) {
-                const u32 word = memory_manager.Read<u32>(address + offset);
-                ++samples;
-                nonzero += word != 0;
-                distinct += word != last;
-                last = word;
-            }
-            LOG_INFO(HW_GPU, "Upscale fallback target {:#x}: {}/{} non-zero, {} changes", address, nonzero,
-                     samples, distinct);
-            (void)fake;
-        }
     }
     auto source = surface(*input);
     // EDEN_NX2_UPSCALE_SOURCE=<gpu address>: blit from another same-sized image (debug aid).

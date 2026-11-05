@@ -86,22 +86,10 @@ void GpuSplit::CheckOwner(const char* where) {
 GpuSplit GpuSplit::instance;
 
 void GpuSplit::MaybeStart(Core::System& system_) {
-    // "GPU thread split" (nx2_gpu_split); EDEN_NX2_SPLIT=0/1/2 still overrides it.
+    // Pitoco mode splits engine methods and macros over two threads; legacy runs one GPU thread.
+    // EDEN_NX2_SPLIT=0/1/2 still overrides it.
     static const char* const env_mode = std::getenv("EDEN_NX2_SPLIT");
-    const char mode = env_mode != nullptr ? env_mode[0] : [] {
-        if (!Settings::values.pitoco_mode.GetValue()) {
-            return '0';
-        }
-        switch (Settings::values.nx2_gpu_split.GetValue()) {
-        case Settings::Nx2GpuSplit::Off:
-            return '0';
-        case Settings::Nx2GpuSplit::Methods:
-            return '1';
-        case Settings::Nx2GpuSplit::MethodsAndMacros:
-        default:
-            return '2';
-        }
-    }();
+    const char mode = env_mode != nullptr ? env_mode[0] : Settings::PitocoActive() ? '2' : '0';
     const bool wanted = mode == '1' || mode == '2';
     if (!wanted || !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
         return;
@@ -132,8 +120,9 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");
     front_macros = mode == '2' && (jit == nullptr || jit[0] != '0');
 #endif
-    LOG_INFO(HW_GPU, "GPU thread split: engine methods run on a second thread{}",
-             front_macros ? ", macros on the first" : "");
+    LOG_INFO(HW_GPU, "GPU thread split: engine methods run on a second thread{} ({})",
+             front_macros ? ", macros on the first" : "",
+             env_mode != nullptr ? "EDEN_NX2_SPLIT" : "Pitoco mode");
 }
 
 void GpuSplit::Stop() {
@@ -430,7 +419,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
-    if (Settings::values.pitoco_mode.GetValue() && Settings::values.nx2_pin_gpu_threads.GetValue()) {
+    if (Settings::PitocoActive() && Settings::values.nx2_pin_gpu_threads.GetValue()) {
         Common::PinCurrentThreadToPhysicalCoreFromLast(1);
     }
     system->RegisterHostThread();

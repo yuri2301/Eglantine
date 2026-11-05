@@ -675,6 +675,52 @@ void SetProcessKeepInRam(bool keep) {
 #endif
 }
 
+void UpdateKeepInRam() {
+#ifdef _WIN32
+    // Pitoco mode: the working set minimum follows the RAM the PC has free instead of a fixed
+    // 60%. Title 1 on 16 GB sat at 87-97% host RAM with 0.4-2 GB free while the rest of the PC
+    // held 6-8 GB: raised while there is room (the game's pages stay resident through heavy
+    // scenes), lowered by 1 GiB at a time when less than 1 GiB is free, so Windows takes this
+    // process's pages back before it starts paging everything. SetProcessKeepInRam(false)
+    // restores the original values.
+    constexpr u64 Low = 1ULL << 30;
+    constexpr u64 High = 3ULL << 30;
+    constexpr u64 Floor = 1ULL << 30;
+    constexpr u64 Hysteresis = 512ULL << 20;
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) {
+        return;
+    }
+    const u64 total = status.ullTotalPhys;
+    const u64 free_ram = status.ullAvailPhys;
+    const HANDLE process = GetCurrentProcess();
+    SIZE_T minimum{}, maximum{};
+    DWORD flags{};
+    if (!GetProcessWorkingSetSizeEx(process, &minimum, &maximum, &flags)) {
+        return;
+    }
+    const u64 current = minimum;
+    u64 target = current;
+    if (free_ram < Low) {
+        target = current > Floor + Low ? current - Low : Floor;
+    } else if (free_ram > High) {
+        target = (std::min)(current + (free_ram - High) / 2, total * 3 / 4);
+    }
+    target = (std::max)(target, Floor);
+    const u64 change = target > current ? target - current : current - target;
+    if (change < Hysteresis) {
+        return;
+    }
+    if (SetProcessWorkingSetSizeEx(process, static_cast<SIZE_T>(target), static_cast<SIZE_T>(total),
+                                   QUOTA_LIMITS_HARDWS_MIN_DISABLE |
+                                       QUOTA_LIMITS_HARDWS_MAX_DISABLE)) {
+        LOG_INFO(Common, "Working set minimum {} -> {} MiB ({} MiB of RAM free)", current >> 20,
+                 target >> 20, free_ram >> 20);
+    }
+#endif
+}
+
 void RefreshThreadPolicies() {
 #if defined(__ANDROID__)
     CpuTopologyState& state = State();

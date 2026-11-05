@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#endif
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -8,6 +18,86 @@
 #include <string>
 
 #include <QApplication>
+
+#ifdef _WIN32
+// An unhandled exception leaves pitoco_crash.txt (the exception, its address and the stack as
+// module+offset; pitoco.map next to the executable names the functions) and pitoco_crash.dmp in
+// the log folder: the log itself loses its last lines on a crash.
+static std::wstring g_crash_directory;
+
+static void AppendCodeAddress(std::string& out, const char* label, const void* address) {
+    HMODULE module{};
+    char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address), &module)) {
+        GetModuleFileNameA(module, name, sizeof(name));
+    }
+    const char* base_name = std::strrchr(name, '\\');
+    char line[MAX_PATH + 64];
+    std::snprintf(line, sizeof(line), "  %s %p %s+%#llx\r\n", label, address,
+                  base_name ? base_name + 1 : name,
+                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+                                                  reinterpret_cast<uintptr_t>(module)));
+    out += line;
+}
+
+static LONG WINAPI WriteCrashReport(EXCEPTION_POINTERS* exception) {
+    static std::atomic<bool> written{};
+    if (g_crash_directory.empty() || written.exchange(true)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const EXCEPTION_RECORD& record = *exception->ExceptionRecord;
+    std::string report;
+    char header[256];
+    std::snprintf(header, sizeof(header),
+                  "Unhandled exception %#lx on thread %lu, info %#llx %#llx\r\n",
+                  record.ExceptionCode, GetCurrentThreadId(),
+                  static_cast<unsigned long long>(
+                      record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0),
+                  static_cast<unsigned long long>(
+                      record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0));
+    report += header;
+    AppendCodeAddress(report, "at", record.ExceptionAddress);
+    void* frames[48];
+    const USHORT count = RtlCaptureStackBackTrace(0, 48, frames, nullptr);
+    for (USHORT i = 0; i < count; ++i) {
+        AppendCodeAddress(report, "frame", frames[i]);
+    }
+    const std::wstring text_path = g_crash_directory + L"\\pitoco_crash.txt";
+    const HANDLE text = CreateFileW(text_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (text != INVALID_HANDLE_VALUE) {
+        DWORD written_bytes{};
+        WriteFile(text, report.data(), static_cast<DWORD>(report.size()), &written_bytes, nullptr);
+        CloseHandle(text);
+    }
+    struct ExceptionInformation {
+        DWORD thread_id;
+        EXCEPTION_POINTERS* exception_pointers;
+        BOOL client_pointers;
+    };
+    using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, int,
+                                              const ExceptionInformation*, const void*, const void*);
+    const HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
+    const auto write_dump = dbghelp ? reinterpret_cast<MiniDumpWriteDumpFn>(
+                                     GetProcAddress(dbghelp, "MiniDumpWriteDump"))
+                               : nullptr;
+    if (write_dump != nullptr) {
+        const std::wstring dump_path = g_crash_directory + L"\\pitoco_crash.dmp";
+        const HANDLE dump = CreateFileW(dump_path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (dump != INVALID_HANDLE_VALUE) {
+            const ExceptionInformation information{GetCurrentThreadId(), exception, FALSE};
+            // MiniDumpWithThreadInfo: the larger dump types fail on the emulator's address space.
+            write_dump(GetCurrentProcess(), GetCurrentProcessId(), dump, 0x1000, &information,
+                       nullptr, nullptr);
+            CloseHandle(dump);
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
@@ -195,6 +285,11 @@ int main(int argc, char* argv[]) {
     // Init settings params
     QCoreApplication::setOrganizationName(QStringLiteral("eden"));
     QCoreApplication::setApplicationName(QStringLiteral("Pitoco"));
+
+#ifdef _WIN32
+    g_crash_directory = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir).wstring();
+    SetUnhandledExceptionFilter(WriteCrashReport);
+#endif
 
     // Increases the maximum open file limit.
     // TODO: This should be common to all frontends.

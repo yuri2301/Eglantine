@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <map>
 #include <vector>
 #include "common/settings.h"
@@ -28,15 +29,16 @@ void ConfigureNx2Rig::Setup(const ConfigurationShared::Builder& builder) {
     auto& layout = *ui->populate_target->layout();
     std::map<u32, QWidget*> hold{}; // Sorted by id: declaration order in settings.h
 
+    // Pitoco mode decides the rig paths as one set (core.cpp, Settings::PitocoActive): only the
+    // switch itself and the options that are not tuning are shown.
+    const std::vector<u32> shown{Settings::values.pitoco_mode.Id(),
+                                 Settings::values.nx2_honor_cpu_clock.Id(),
+                                 Settings::values.nx2_gpu_profiler.Id()};
     for (auto* setting : Settings::values.linkage.by_category[Settings::Category::Nx2Rig]) {
-        ConfigurationShared::Widget* widget = [&]() {
-            if (setting->Id() == Settings::values.nx2_texture_vram_share.Id()) {
-                return builder.BuildWidget(setting, apply_funcs,
-                                           ConfigurationShared::RequestType::Slider, true, 1.0f,
-                                           nullptr, tr("%", "Share of VRAM (e.g. 75%)"));
-            }
-            return builder.BuildWidget(setting, apply_funcs);
-        }();
+        if (std::find(shown.begin(), shown.end(), setting->Id()) == shown.end()) {
+            continue;
+        }
+        ConfigurationShared::Widget* widget = builder.BuildWidget(setting, apply_funcs);
         if (widget == nullptr) {
             continue;
         }

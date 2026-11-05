@@ -9,12 +9,15 @@ files.
 
 ## Modes
 
-- **Pitoco mode (experimental, on by default):** the paths tuned for the reference PC: the GPU
-  work split over two threads, frames prepared ahead, the rig profile, high priority, keeping the
-  game in RAM and the other options on the Switch 2 Rig page. Switch it off under
-  Configure > Switch 2 Rig.
-- **Legacy:** with Pitoco mode off, Switch 2 games run the way Eden and Eglantine run them, and the
-  Switch 2 Rig options have no effect.
+- **Pitoco mode (experimental, on by default):** one switch under Configure > Switch 2 Rig,
+  decided once when a game starts and written to the log ("Pitoco mode: on"). It runs the GPU
+  work split over two threads at high priority, and memory that follows the workload: the game
+  is kept in RAM while the PC has RAM free and given back when it runs short, and textures use
+  the VRAM the driver reports as free, less what buffers and render targets hold. It never
+  changes your settings.
+- **Legacy:** with Pitoco mode off, Switch 2 games run the way Eden and Eglantine run them.
+- After a crash, `pitoco_crash.txt` (and `pitoco_crash.dmp`) in the log folder give the place;
+  `pitoco.map` next to `pitoco.exe` names the function.
 
 ## Reference PC
 

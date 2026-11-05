@@ -53,7 +53,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         Common::SetCurrentThreadToPerformanceCores();
         // "Keep the GPU threads on their own CPU cores": the front on the last physical core,
         // the split's back on the one before it.
-        if (Settings::CurrentProgramIsSwitch2() && Settings::values.pitoco_mode.GetValue() &&
+        if (Settings::CurrentProgramIsSwitch2() && Settings::PitocoActive() &&
             Settings::values.nx2_pin_gpu_threads.GetValue()) {
             Common::PinCurrentThreadToPhysicalCoreFromLast(0);
         }

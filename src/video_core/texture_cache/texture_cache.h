@@ -267,10 +267,14 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
         // it. The rest stays for buffers, render targets and other programs; the budget-following
         // thresholds (TickFrame) still collect before that.
         const u64 budget = runtime.GetDeviceMemoryBudget();
-        if (budget >= 10_GiB && Settings::values.pitoco_mode.GetValue()) {
-            const u64 share = std::clamp<u64>(Settings::values.nx2_texture_vram_share.GetValue(),
-                                              50, 90);
-            max_critical = (std::max)(max_critical, budget / 100 * share);
+        if (budget >= 10_GiB && Settings::PitocoActive()) {
+            // Pitoco mode: the budget less what the rest of the process holds in VRAM now
+            // (buffers, render targets, staging: device heaps minus the images), less 1 GiB.
+            // Title 1 in a race: 11.3 GiB budget, 5.9 GiB in the heaps of which 4.0 textures.
+            const u64 heaps = Common::Nx2Memory::Get(Common::Nx2Memory::Stat::VulkanDeviceHeaps);
+            const u64 others = heaps > image_bytes ? heaps - image_bytes : 0;
+            const u64 room = budget > others + 1_GiB ? budget - others - 1_GiB : budget / 2;
+            max_critical = (std::max)(max_critical, (std::min)(room, budget / 100 * 90));
         }
     }
     critical_memory = (std::min)(critical_memory, max_critical);

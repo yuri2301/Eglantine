@@ -248,6 +248,15 @@ add_executable(yuzu
 )
 
 set_target_properties(yuzu PROPERTIES OUTPUT_NAME "pitoco")
+# pitoco.map next to the executable (and in the release zip): the crash report gives
+# pitoco.exe+offset, the map names the function there.
+if (WIN32)
+    if (MSVC)
+        target_link_options(yuzu PRIVATE "/MAP:$<TARGET_FILE_DIR:yuzu>/pitoco.map")
+    else()
+        target_link_options(yuzu PRIVATE "-Wl,-Map=$<TARGET_FILE_DIR:yuzu>/pitoco.map")
+    endif()
+endif()
 
 # Shipped next to the executable: the NX2 switches a GUI launch cannot set another way. Read at
 # startup (LoadNx2Switches in main.cpp); a user copy in %APPDATA%\eden overrides it.

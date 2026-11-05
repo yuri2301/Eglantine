@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <version>
 #if __cpp_lib_chrono >= 201907L
 #include <chrono>
@@ -233,6 +234,16 @@ void SetCurrentProgramIsSwitch2(bool is_switch2) {
 
 bool CurrentProgramIsSwitch2() {
     return current_program_is_switch2;
+}
+
+static std::atomic_bool pitoco_active = false;
+
+void SetPitocoActive(bool active) {
+    pitoco_active.store(active, std::memory_order_relaxed);
+}
+
+bool PitocoActive() {
+    return pitoco_active.load(std::memory_order_relaxed);
 }
 
 static std::optional<AstcRecompression> astc_recompression_override;
