@@ -433,7 +433,7 @@ void GpuSplit::ConsumeSinkTimed(Tegra::Engines::EngineInterface* engine) {
     if (engine->method_sink.empty()) {
         return;
     }
-    Nx2Profile::Scope scope{Nx2Profile::Zone::MethodSink};
+    Nx2Profile::SampledScope scope{Nx2Profile::Zone::MethodSink};
     engine->ConsumeSink(*system);
 }
 

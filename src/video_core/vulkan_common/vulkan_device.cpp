@@ -749,7 +749,11 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     // Buffer device addresses are kept whenever supported: the guest address table (shaders
     // that read memory through 64-bit pointers loaded from memory, Ocarina of Time) points
     // into the buffer cache's buffers by address. DLSS needs them too.
-    if (!features.buffer_device_address.bufferDeviceAddress) {
+    // On Vulkan 1.2+ the feature is core and the extension flag was never set (0.2.2 logged the
+    // table as unavailable): follow the feature itself.
+    if (features.buffer_device_address.bufferDeviceAddress) {
+        extensions.buffer_device_address = true;
+    } else {
         RemoveExtensionFeature(extensions.buffer_device_address, features.buffer_device_address,
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }

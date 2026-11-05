@@ -856,6 +856,7 @@ struct Maxwell3D::FrontState {
     /// then can it have a deferred instanced draw to issue at the end of a macro.
     bool draw_pending{true};
     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
+    bool profiling{}; ///< Nx2Profile::Enabled(), read once (a call per write cost ~2% of the front)
 };
 
 namespace {
@@ -924,6 +925,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
         front->control = shadow_state.shadow_ram_control;
         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
+        front->profiling = VideoCommon::Nx2Profile::Enabled();
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
         macro_params.clear();
@@ -946,7 +948,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     } else if (fs.control == Regs::ShadowRamControl::Replay) {
         value = fs.shadow[method];
     }
-    if (Profile::Enabled()) [[unlikely]] {
+    if (fs.profiling) [[unlikely]] {
         Profile::Add(Profile::Counter::MethodWrites, 1);
     }
     if (method == MAXWELL3D_REG_INDEX(shadow_ram_control) && FrontVerifyEnabled()) [[unlikely]] {
@@ -957,7 +959,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
         // writes, and the shadow RAM (tracked by default) holds the value already.
         if (fs.regs[method] == value && shadow_kept && fs.skip_same) {
-            if (Profile::Enabled()) [[unlikely]] {
+            if (fs.profiling) [[unlikely]] {
                 Profile::Add(Profile::Counter::SameValueWrites, 1);
             }
             return;
@@ -1121,7 +1123,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
     {
-        VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+        VideoCommon::Nx2Profile::SampledScope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
         if (!engine.native_jit) {
             engine.native_jit = std::make_shared<TuringMacroJit>();
@@ -1165,11 +1167,10 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
 void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                              u32 count) {
     // The words may be written by work still queued for the back (indirect draw arguments from
-    // a culling dispatch). Only the compute and copy work queued so far must have run: it marks
-    // what it writes in the buffer cache. A newer copy there is downloaded with the back held
-    // (a full drain); otherwise guest memory is current and the draws queued after the last
-    // writer keep running. MKW's races: ~370 such reads a second, ~185 ms of full drains.
-    split.WaitForWriters(VideoCommon::Nx2Profile::DrainReason::MacroDmaRead);
+    // a culling dispatch), and the caches that may hold newer ones belong to it: drain. 0.2.2
+    // waited only for the queued compute and copy work instead: Ocarina hung when its title menu
+    // took input, and MKW's waits moved to semaphores (35 -> 230 ms/s) with no gain.
+    split.Drain(VideoCommon::Nx2Profile::DrainReason::MacroDmaRead);
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);

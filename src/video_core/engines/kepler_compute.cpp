@@ -1230,7 +1230,7 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
     if (native_data_ram) {
         macro.native_interpreter.active_dram = native_data_ram;
     }
-    VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+    VideoCommon::Nx2Profile::SampledScope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
     if (!macro.native_jit) {
         macro.native_jit = std::make_shared<TuringMacroJit>();
     }

@@ -96,6 +96,24 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - **The front is**: idle only 41-75 ms a second, 275-305 ms of it waiting for the back: writers of GPU-built lists 241 ms (~4,400/s), macro DMA reads 173-193 ms (~370/s, ~0.5 ms each, a full drain each), semaphores ~100 ms.
 - In code (not built): a macro DMA read waits only for the queued compute and copy work (`WaitForWriters`), and drains fully only when the buffer cache holds a newer copy of the words. Assumes draws don't write what macros read back (true for the indirect arguments culling dispatches write); revert if MKW shows popping.
 
+## Unattended tests (scratchpad `bench/`: `run.sh`, `mkw_race.sh`, `oot_check.sh`, `report.py`)
+`eden-cli` with the GUI's settings (synced into `sdl2-config.ini`, backup kept), `EDEN_NX2_KEY_SCRIPT` input, frame capture every 120 presents and a report per run. MKW: menus on defaults by tapping A into a Grand Prix race (desert circuit), A held with steering assist; report 240-340 s. Ocarina: intro video to ~250 s, A and + through the title menu, A into the in-engine Deku Tree cutscene; brightness of the last frames tells a picture from black.
+
+| Build | MKW race | Ocarina |
+| --- | --- | --- |
+| 0.2.1 | 26.5 fps, 3.7 frames >100 ms per window; front waits: macro DMA read 230, GPU-built lists 229, semaphore 35 ms/s | Menus render; the in-engine cutscene is black with subtitles (brightness 0.0), 20-26k draws/s |
+| 0.2.2 (macro DMA reads wait for writers only) | 24.1 fps, 1.8 frames >100 ms per window; macro DMA read waits gone, but semaphore 230 and GPU-built lists 272 ms/s | The GPU threads hung when the title menu took its first input (no presents from 257 s, guest core 0 spinning) |
+
+- (The title menu always rendered, as the user confirmed: in 0.2.1 the script's first A started a new game at once, so the menu was never captured; in 0.2.2 it stayed on screen because of the hang.)
+- 0.2.2 also logged "Guest address table: unavailable": on Vulkan 1.2+ the buffer device address extension flag was never set (core feature). Fixed for 0.2.3: the flag follows the feature.
+- 0.2.3 reverts the macro DMA read change (the hang, and no gain in MKW).
+
+**Function sampling (thread sampler, symbols via `_NT_SYMBOL_PATH`), MKW race on 0.2.1:** the front waits ~59% of its time: macro DMA reads' full drains 22.3%, GPU-built lists (`WaitForWriters`) 21.7%, waiting for the host GPU to finish a list copy (`Nx2ReadListCopy` -> `MasterSemaphore::Wait`) 5.8%, semaphores 3.5%; idle for the game 11.4%; profiler overhead ~5% (a clock read per macro call, `Enabled()` per register write); real work ~25%. The back is ~29% idle. Second 0.2.1 run: 25.5 fps (first 26.5): run-to-run noise ~1 fps.
+- **0.2.2's Ocarina hang is a correctness bug, not a deadlock:** both GPU threads idle (77%/71%) waiting for the game, whose core 0 spins. Macro reads that waited only for compute and copy work missed values from queued semaphore releases and query reports.
+- **Macros on the back (`EDEN_NX2_SPLIT=1`) are worse: 15.3 fps**; the back becomes the bottleneck and the front still waits longer on GPU-built lists (461 ms/s) and semaphores (348). Macros stay on the front.
+- Conclusion: the command stream has ~1,000 points a second where the front must see GPU results; removing one kind shifts the wait to the next. The structural fix is the GPU consuming its own lists (indirect execution).
+- In code for 0.2.3: profiler overhead (front flag cached, sampled timing for macros and the method sink).
+
 ## Guest pointers: shaders that read memory by address (Ocarina's 3D)
 0.2.1's log answered where Ocarina's untracked addresses come from: `CompositeExtractU32x2(LoadGlobal64(IAdd64(PackUint2x32(...), imm)), 0x0)` in vertex, fragment, compute and task/mesh programs. The program loads a 64-bit pointer from memory and reads through it, so no bound buffer can be known at translation time and the fallback reads zero.
 
