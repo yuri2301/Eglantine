@@ -612,7 +612,6 @@ struct Values {
                                                 Category::RendererAdvanced};
 
     // Mario Kart World: select a fixed or dynamic in-game frame-rate mode (loader/nso.cpp).
-    SwitchableSetting<bool> mkw_30fps{linkage, false, "mkw_30fps", Category::RendererAdvanced};
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
                                             Category::RendererAdvanced};
 

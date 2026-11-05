@@ -794,7 +794,7 @@ u32 ComputeEnvironment::ReadViewportTransformState() {
     return viewport_transform_state;
 }
 
-void FileEnvironment::Deserialize(std::ifstream& file) {
+void FileEnvironment::Deserialize(std::ifstream& file, u64 bytes_left) {
     u64 code_size{};
     u64 num_texture_types{};
     u64 num_texture_pixel_formats{};
@@ -817,6 +817,10 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         .read(reinterpret_cast<char*>(&read_highest), sizeof(read_highest))
         .read(reinterpret_cast<char*>(&viewport_transform_state), sizeof(viewport_transform_state))
         .read(reinterpret_cast<char*>(&stage), sizeof(stage));
+    // A damaged entry (a power cut while the cache was written) holds sizes beyond the file.
+    if (code_size > bytes_left || stage > Shader::Stage::Mesh) {
+        throw std::ios_base::failure("damaged pipeline cache entry");
+    }
     code.resize(Common::DivCeil(code_size, sizeof(u64)));
     file.read(reinterpret_cast<char*>(code.data()), code_size);
     for (size_t i = 0; i < num_texture_types; ++i) {
@@ -993,57 +997,81 @@ void SerializePipeline(std::span<const char> key, std::span<const GenericEnviron
 void LoadPipelines(
     std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
-    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics) try {
+    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         return;
     }
-    file.exceptions(std::ifstream::failbit);
-    const auto end{file.tellg()};
-    file.seekg(0, std::ios::beg);
+    std::streamoff good_end{}; // the end of the last whole entry
+    try {
+        file.exceptions(std::ifstream::failbit);
+        const std::streamoff end{file.tellg()};
+        file.seekg(0, std::ios::beg);
 
-    std::array<char, 8> magic_number;
-    u32 cache_version;
-    file.read(magic_number.data(), magic_number.size())
-        .read(reinterpret_cast<char*>(&cache_version), sizeof(cache_version));
-    if (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version) {
-        file.close();
-        if (Common::FS::RemoveFile(filename)) {
-            if (magic_number != MAGIC_NUMBER) {
-                LOG_ERROR(Common_Filesystem, "Invalid pipeline cache file");
+        std::array<char, 8> magic_number;
+        u32 cache_version;
+        file.read(magic_number.data(), magic_number.size())
+            .read(reinterpret_cast<char*>(&cache_version), sizeof(cache_version));
+        if (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version) {
+            file.close();
+            if (Common::FS::RemoveFile(filename)) {
+                if (magic_number != MAGIC_NUMBER) {
+                    LOG_ERROR(Common_Filesystem, "Invalid pipeline cache file");
+                }
+                if (cache_version != expected_cache_version) {
+                    LOG_INFO(Common_Filesystem, "Deleting old pipeline cache");
+                }
+            } else {
+                LOG_ERROR(Common_Filesystem,
+                          "Invalid pipeline cache file and failed to delete it in \"{}\"",
+                          Common::FS::PathToUTF8String(filename));
             }
-            if (cache_version != expected_cache_version) {
-                LOG_INFO(Common_Filesystem, "Deleting old pipeline cache");
-            }
-        } else {
-            LOG_ERROR(Common_Filesystem,
-                      "Invalid pipeline cache file and failed to delete it in \"{}\"",
-                      Common::FS::PathToUTF8String(filename));
-        }
-        return;
-    }
-    while (file.tellg() != end) {
-        if (stop_loading.stop_requested()) {
             return;
         }
-        u32 num_envs{};
-        file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
-        std::vector<FileEnvironment> envs(num_envs);
-        for (FileEnvironment& env : envs) {
-            env.Deserialize(file);
+        good_end = file.tellg();
+        while (static_cast<std::streamoff>(file.tellg()) != end) {
+            if (stop_loading.stop_requested()) {
+                return;
+            }
+            u32 num_envs{};
+            file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
+            // A pipeline has 1 to 5 stages. A power cut left a cache's tail zeroed: its 0-stage
+            // "entry" read past an empty list and corrupted the heap at every boot.
+            if (num_envs == 0 || num_envs > 5) {
+                throw std::ios_base::failure("damaged pipeline cache entry");
+            }
+            std::vector<FileEnvironment> envs(num_envs);
+            for (FileEnvironment& env : envs) {
+                env.Deserialize(file, static_cast<u64>(end - static_cast<std::streamoff>(file.tellg())));
+            }
+            if (envs.front().ShaderStage() == Shader::Stage::Compute) {
+                if (num_envs != 1) {
+                    throw std::ios_base::failure("damaged pipeline cache entry");
+                }
+                load_compute(file, std::move(envs.front()));
+            } else {
+                load_graphics(file, std::move(envs));
+            }
+            good_end = file.tellg();
         }
-        if (envs.front().ShaderStage() == Shader::Stage::Compute) {
-            load_compute(file, std::move(envs.front()));
-        } else {
-            load_graphics(file, std::move(envs));
+    } catch (const std::ios_base::failure& e) {
+        LOG_ERROR(Common_Filesystem, "Pipeline cache {}: {}", Common::FS::PathToUTF8String(filename),
+                  e.what());
+        file.close();
+        // Keep the whole entries before the damage; drop the file only if none are left.
+        std::error_code ec;
+        if (good_end > 0) {
+            std::filesystem::resize_file(filename, static_cast<std::uintmax_t>(good_end), ec);
+            if (!ec) {
+                LOG_WARNING(Common_Filesystem, "Pipeline cache cut to the {} bytes before the damage",
+                            good_end);
+                return;
+            }
         }
-    }
-
-} catch (const std::ios_base::failure& e) {
-    LOG_ERROR(Common_Filesystem, "{}", e.what());
-    if (!Common::FS::RemoveFile(filename)) {
-        LOG_ERROR(Common_Filesystem, "Failed to delete pipeline cache file {}",
-                  Common::FS::PathToUTF8String(filename));
+        if (!Common::FS::RemoveFile(filename)) {
+            LOG_ERROR(Common_Filesystem, "Failed to delete pipeline cache file {}",
+                      Common::FS::PathToUTF8String(filename));
+        }
     }
 }
 

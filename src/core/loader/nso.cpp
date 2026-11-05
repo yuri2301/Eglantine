@@ -177,16 +177,15 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
     }
 
-    // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Force its native
-    // 30 FPS mode, or let it choose dynamically using the whole frame time (CPU + GPU wait).
+    // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Dynamic FPS lets it
+    // choose using the whole frame time (CPU + GPU wait) instead of its CPU time alone.
     // Match the instruction sequence instead of relying on a title-version-specific address.
     const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
     bool mkw_dynamic_fps_patch_applied = false;
-    if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
+    if (mkw_dynamic && name == "main" &&
         process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
-        const u32 mode = mkw_dynamic ? 0U : 2U;
-        const u32 mode_instruction = 0x52800008U | (mode << 5); // mov w8, #mode
+        constexpr u32 mode_instruction = 0x52800008U; // mov w8, #0
         const auto& text = nso_header.segments[0];
         u8* const code = codeset.memory.data() + module_start + text.location;
         const size_t count = text.size / sizeof(u32);
@@ -214,7 +213,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
 
         size_t frame_time_site = 0;
         size_t frame_time_matches = 0;
-        if (mode_matches == 1 && mkw_dynamic) {
+        if (mode_matches == 1) {
             for (size_t i = mode_site + 1; i < mode_site + 32 && i < count; ++i) {
                 if ((word(i) & 0xFFFFFFE0) == 0xF9409660) { // ldr xN, [x19, #0x128]
                     frame_time_site = i;
@@ -223,17 +222,14 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             }
         }
 
-        if (mode_matches == 1 && (!mkw_dynamic || frame_time_matches == 1)) {
+        if (mode_matches == 1 && frame_time_matches == 1) {
             std::memcpy(code + mode_site * sizeof(u32), &mode_instruction,
                         sizeof(mode_instruction));
-            if (mkw_dynamic) {
-                const u32 whole_frame_time = 0xF9407660 | (word(frame_time_site) & 0x1F);
-                std::memcpy(code + frame_time_site * sizeof(u32), &whole_frame_time,
-                            sizeof(whole_frame_time));
-                mkw_dynamic_fps_patch_applied = true;
-            }
-            LOG_INFO(Loader, "Mario Kart World: {} FPS mode enabled (main+{:#x})",
-                     mkw_dynamic ? "dynamic" : "30",
+            const u32 whole_frame_time = 0xF9407660 | (word(frame_time_site) & 0x1F);
+            std::memcpy(code + frame_time_site * sizeof(u32), &whole_frame_time,
+                        sizeof(whole_frame_time));
+            mkw_dynamic_fps_patch_applied = true;
+            LOG_INFO(Loader, "Mario Kart World: dynamic FPS mode enabled (main+{:#x})",
                      text.location + mode_site * sizeof(u32));
         } else {
             LOG_WARNING(Loader,

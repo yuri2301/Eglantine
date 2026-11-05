@@ -47,7 +47,7 @@ Last updated: 2026-11-04, after build 14.
 | 14 | Memory breakdown line (dynarmic counts committed code memory) | **Long stretches locked 60 fps, stretches locked 30 (game's choice, back ~81% busy), heavy free roam 20–40 ms.** Game memory 9.3 of 9.8 GB; emulator's own RAM extras < 1 GB; VRAM 5.8 GB; process RAM 4.3 GB (Windows pushed the rest out) |
 | 15 | Memory line: textures/buffers report the caches' own bytes; Rig option "Keep the game in RAM" (`nx2_keep_in_ram`, off): soft minimum working set of 60% of RAM, at most all but 4 GB (9.7 GB on this PC) | 3 MKW sessions (dynamic FPS on, sync core speed on): frames 28–55 ms, far fewer 100 ms hitches (0–2 per 600 frames, was 3–7). P-switch: draws fell from ~60k/s to 3–6k/s and fps hit target at once. Kart slower than the map at times. DKB: purple screen (wrong upscale pair). Host RAM still 95–99% |
 | 16 | DKB: the upscale fallback takes only frame-sized pairs (same aspect, ≥320x180, ≤4x) and the largest output, scans cbuf0+0x80..0x400 and logs the candidates once per program; the back thread's method calls timed (1 in 32) so "other" shrinks to what is really unzoned; memory line reset at each game; graphics pipelines evicted after 18,000 unused frames (was 9,000) and the log counts evicted ones built again | — (not tested yet) |
-| 17 | Kernel: `svcWaitForAddress` wait type 3 (WaitIfEqual64, 64-bit compare on an 8-byte-aligned address); the 64-bit SVC passes the value as s64 | — (not tested yet) |
+| 17 | Kernel: `svcWaitForAddress` wait type 3 (WaitIfEqual64, 64-bit compare on an 8-byte-aligned address); the 64-bit SVC passes the value as s64. Shader cache loader: an entry of 0 or more than 5 stages, or code larger than the rest of the file, ends the load and the file is cut to the last whole entry (a power cut left MKW's cache with a zeroed tail; the 0-stage entry read past an empty list and corrupted the heap at boot). The 30 FPS mode (`mkw_30fps`) and the "recommended MKW settings" prompt are removed | — (not tested yet) |
 
 Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps average, ~11 hitches per 600 frames. Ours (build 10): ~31 fps average, ~2 hitches per 600 frames.
 
@@ -60,7 +60,7 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - Upstream's `mkw_dynamic_fps`, tested on build 14 (docked, 38 min):
   - Frames 30–57 ms (about 18–33 fps), never locked 60, and 3,379 swap-interval changes.
   - The back thread stayed ~80% busy throughout, so the uncapped game simply saturates it.
-  - Worse than the default, where the game locks to a steady 30 or 60. Recommended: off. `mkw_30fps` is the option for steady pacing.
+  - Worse than the default, where the game locks to a steady 30 or 60 (an early reading; the user preferred dynamic FPS in play).
   - Late in that session the game used 9.7 of 9.8 GB, translated code 760 MB, VRAM 8.6 GB.
 - The user describes an "artificial, pushed" feeling. Suspects: the 60/30 switching, and the extra frame of latency from `nx2_frames_ahead` / async presentation. A test with "Prepare the next frame..." off was suggested.
 - RAM: the game itself uses ~9.3 GB. On 16 GB, Windows compresses or pages part of it. The "rest of PC" figure (~11 GB) includes Windows' compressed pages.
@@ -98,7 +98,7 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 
 ## Log of the build 15 sessions (MKW x3, then DKB)
 - **P-switch (1342–1372 s):** draws fell from ~55–63k/s to 2.5–6k/s and the back thread went 65–90% idle: fps follows the game's draw count at ~13 µs per draw. Removing draws the game wants is not an option; making each draw cheaper (steps 2–4) is.
-- **Kart slower than the map:** MKW steps its physics once per frame. Frames slower than the mode the game picked slow the kart while timer-driven parts keep pace; `mkw_dynamic_fps` makes it worse by pacing at interval 1 while the game keeps switching. Recommended: `mkw_dynamic_fps` off (or `mkw_30fps`), sync core speed off, fast GPU time default.
+- **Kart slower than the map:** MKW steps its physics once per frame. Frames slower than the mode the game picked slow the kart while timer-driven parts keep pace; `mkw_dynamic_fps` makes it worse by pacing at interval 1 while the game keeps switching. Those settings were tried in build 16 and played worse than the user's own setup: settings are not the fix; the per-draw cost is.
 - **Heavy racing, back thread (1403 s):** "other" 267 ms/s unzoned (1.66M method calls/s were only counted, not timed), bind stage buffers 96, update buffers 75, flush work 56, fill image views 45, read handles 40, pipeline lookup 38, method sink 38; 8,704 buffer downloads/s (9 MB/s).
 - **Pipelines:** 600 evicted at once after 9,000 frames at 1403 s, then 6–181 every ~25 s.
 - **DKB:** gameplay-level work (~25k draws/s) behind a purple screen. The game's tensor (HMMA) upscale program 0x2116149400 was refused and the fallback blitted a 4x4 image into a 360x202 one, so the real output was never written.
@@ -117,3 +117,7 @@ Official upstream build (nx2 09e539a, MSVC, handheld) on the same PC: ~19 fps av
 - Different SDK point release: NintendoWare 19.3.2 (MKW 19.3.3), no byte-identical 4 KiB code pages with MKW. Native macros (step 3) must therefore match the macros uploaded at run time by hash, not offsets in the executable.
 - Middleware: Havok 2022.1 (Physics, Animation, Cloth), sead, NintendoWare Vfx2/G3d2/Ui2d, SMAA_For_NDSR. MKW instead has Pia, NPLN and NintendoWare_Ndsr.
 - Steps 2–4 (GPU indirect draws, native macros, spread draw preparation) work at the NVN/GPU level, so they should help DKB too once it boots. The purple screen still needs a DKB log.
+
+## Working rules (from the user)
+- No recommended settings. Each build is tested on the user's own setup unchanged, so a log compares builds, not settings.
+- Fix the game's frame rate in the emulator's code (the per-draw cost), not by capping or forcing frame modes. The 30 FPS mode slowed the game's clock and was removed in build 17.
