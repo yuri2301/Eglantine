@@ -15,7 +15,13 @@ namespace Vulkan {
 DescriptorBufferRing::DescriptorBufferRing(const Device& device_,
                                            MemoryAllocator& memory_allocator)
     : device{device_} {
-    if (!device.IsExtDescriptorBufferSupported() || !device.IsBufferDeviceAddressSupported()) {
+    // Kept off: up to 0.2.2 the device-address flag was never set on Vulkan 1.2+, so this ring
+    // was never valid and no pipeline used descriptor buffers. 0.2.3 set the flag (for the guest
+    // address table) and every compute pipeline switched to them: NVIDIA's driver crashed in
+    // vkCreateComputePipelines while the disk cache loaded.
+    constexpr bool UseDescriptorBuffers = false;
+    if (!UseDescriptorBuffers || !device.IsExtDescriptorBufferSupported() ||
+        !device.IsBufferDeviceAddressSupported()) {
         return;
     }
     const VkPhysicalDeviceDescriptorBufferPropertiesEXT& props{device.DescriptorBufferProperties()};
