@@ -68,6 +68,8 @@ struct StorageInfo {
     std::unordered_map<const IR::Inst*, small_vector<StorageBufferAddr, 4>> native_candidates;
     /// A native access with several candidate pointers was left global.
     bool native_runtime_bounds{};
+    /// An access whose address could not be tracked at all was left global.
+    bool untracked{};
 };
 
 /// Returns true when the instruction is a global memory instruction
@@ -476,6 +478,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     const std::optional<LowAddrInfo> low_addr_info{TrackLowAddress(&inst)};
     if (!low_addr_info) {
         // Failed to track the low address, use NVN fallbacks
+        info.untracked = true;
         return;
     }
     // First try to find storage buffers in the NVN address
@@ -535,6 +538,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         if (!storage_buffer) {
             // If that also fails, use NVN fallbacks: at run time an address outside the buffers
             // the program binds reads zero. Once per program, where the address comes from.
+            info.untracked = true;
             static std::mutex logged_mutex;
             static std::unordered_set<u64> logged;
             const u64 key{(u64{env.StartAddress()} << 8) | static_cast<u64>(env.ShaderStage())};
@@ -687,6 +691,7 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
         }
     }
     program.info.native_global_bounds |= info.native_runtime_bounds;
+    program.info.uses_untracked_global_memory |= info.untracked;
     for (const StorageBufferAddr& storage_buffer : info.set) {
         program.info.storage_buffers_descriptors.push_back({
             .cbuf_index = storage_buffer.index,

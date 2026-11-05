@@ -1019,7 +1019,10 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // An address outside every bound buffer (a pointer the program loaded from memory) is read
     // through the guest address table when there is one: L1 entry per 64 MiB of guest GPU
     // address space -> L2 table, L2 entry per 4 KiB page -> device address of the page's copy.
-    const bool guest_pointers{profile.guest_address_table != 0};
+    // Only programs with untracked accesses: 0.2.3/0.2.4 gave every program with global memory
+    // the table path (MKW's compute shaders too) and NVIDIA's driver crashed compiling them.
+    const bool guest_pointers{profile.guest_address_table != 0 &&
+                              info.uses_untracked_global_memory};
     Id guest_u64_pointer{};
     if (guest_pointers) {
         AddExtension("SPV_KHR_physical_storage_buffer");
