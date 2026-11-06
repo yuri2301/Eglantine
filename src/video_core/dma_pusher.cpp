@@ -6,8 +6,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -29,6 +33,105 @@ namespace Tegra {
 
 constexpr u32 MacroRegistersStart = 0xE00;
 constexpr u32 ComputeInline = 0x6D;
+
+namespace {
+// Command list pages the split's front has found CPU-written after waiting for the queued
+// compute and copy work, by device page. Before reading a list the front waits for that work
+// in case it writes the list's page for the first time (MKW: ~22% of the front's time, about
+// 4,400 waits a second). A page found CPU-written TrustAfter times, and never GPU-written, is
+// trusted: its lists skip the wait, and the back checks each one in order afterwards. A trusted
+// page found GPU-written there is demoted for good. Front thread only, except the demotions.
+struct ListPageTrust {
+    static constexpr u32 TrustAfter = 64;
+    static constexpr u32 GpuWritten = ~0U;
+    std::unordered_map<u64, u32> checks;
+    std::mutex demoted_mutex;
+    std::vector<u64> demoted;
+    std::atomic<bool> has_demoted{};
+    std::atomic<u64> demotions{};
+    u64 skipped{};
+    std::chrono::steady_clock::time_point last_report{};
+};
+ListPageTrust g_list_trust;
+
+template <typename Func>
+bool ForEachListPage(MemoryManager& memory, GPUVAddr address, size_t size, Func&& func) {
+    for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+        const auto device = memory.GpuToCpuAddress(page);
+        if (!device || !func(*device >> 12)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TrustedListPages(MemoryManager& memory, GPUVAddr address, size_t size) {
+    auto& trust = g_list_trust;
+    if (trust.has_demoted.exchange(false, std::memory_order_acquire)) {
+        std::scoped_lock lock{trust.demoted_mutex};
+        for (const u64 page : trust.demoted) {
+            trust.checks[page] = ListPageTrust::GpuWritten;
+        }
+        trust.demoted.clear();
+    }
+    return ForEachListPage(memory, address, size, [&](u64 page) {
+        const auto it = trust.checks.find(page);
+        return it != trust.checks.end() && it->second >= ListPageTrust::TrustAfter &&
+               it->second != ListPageTrust::GpuWritten;
+    });
+}
+
+void NoteListPages(MemoryManager& memory, GPUVAddr address, size_t size, bool gpu_written) {
+    ForEachListPage(memory, address, size, [&](u64 page) {
+        u32& checks = g_list_trust.checks[page];
+        if (gpu_written) {
+            checks = ListPageTrust::GpuWritten;
+        } else if (checks < ListPageTrust::TrustAfter) {
+            ++checks;
+        }
+        return true;
+    });
+}
+
+// On the back, in order: everything queued before the skipped wait has run.
+void VerifyTrustedListPages(MemoryManager& memory, GPUVAddr address, size_t size) {
+    ForEachListPage(memory, address, size, [&](u64 page) {
+        if (!Nx2IsGpuWritten(page << 12)) {
+            return true;
+        }
+        auto& trust = g_list_trust;
+        {
+            std::scoped_lock lock{trust.demoted_mutex};
+            trust.demoted.push_back(page);
+        }
+        trust.has_demoted.store(true, std::memory_order_release);
+        if (trust.demotions.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOG_WARNING(HW_GPU, "Trusted command list page {:#x} turned out GPU-written: demoted",
+                        page << 12);
+        }
+        return true;
+    });
+}
+
+void ReportListTrust() {
+    auto& trust = g_list_trust;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - trust.last_report < std::chrono::seconds{30}) {
+        return;
+    }
+    trust.last_report = now;
+    size_t trusted = 0;
+    for (const auto& [page, checks] : trust.checks) {
+        trusted += checks >= ListPageTrust::TrustAfter && checks != ListPageTrust::GpuWritten;
+    }
+    LOG_INFO(HW_GPU,
+             "Command list waits skipped on trusted pages: {} in 30 s ({} of {} pages trusted, "
+             "{} demotions so far)",
+             trust.skipped, trusted, trust.checks.size(),
+             trust.demotions.load(std::memory_order_relaxed));
+    trust.skipped = 0;
+}
+} // Anonymous namespace
 
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
     : system{system_}
@@ -178,12 +281,21 @@ bool DmaPusher::Step() {
         // written by a dispatch or copy still queued for it reads as unwritten, and its words as
         // stale (Fast Fusion's culling fills in instanced draws' arguments; stale ones asked for
         // billions of instances and lost the device loading a race).
-        bool gpu_written =
-            IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
-            VideoCommon::GpuSplit::Get().WaitForWriters()) {
-            gpu_written =
-                IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        const size_t list_bytes = size_t{header.size} * sizeof(u32);
+        bool gpu_written = IsGpuWrittenCommands(dma_state.dma_get, list_bytes);
+        if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+            if (!gpu_written && TrustedListPages(memory_manager, dma_state.dma_get, list_bytes)) {
+                ++g_list_trust.skipped;
+                split.Defer([memory = &memory_manager, address = dma_state.dma_get, list_bytes] {
+                    VerifyTrustedListPages(*memory, address, list_bytes);
+                });
+                ReportListTrust();
+            } else {
+                if (!gpu_written && split.WaitForWriters()) {
+                    gpu_written = IsGpuWrittenCommands(dma_state.dma_get, list_bytes);
+                }
+                NoteListPages(memory_manager, dma_state.dma_get, list_bytes, gpu_written);
+            }
         }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory
