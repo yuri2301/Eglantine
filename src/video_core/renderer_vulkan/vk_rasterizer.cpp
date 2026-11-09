@@ -302,6 +302,80 @@ RasterizerVulkan::~RasterizerVulkan() {
     delete std::exchange(g_diag_pool, nullptr);
 }
 
+namespace {
+// EDEN_NX2_DIAG*: what the draw being prepared is (set by Draw/DrawIndirect, read by PrepareDraw).
+struct DiagDraw {
+    const char* kind{"draw"};
+    u32 vertices{};
+    u32 instances{};
+};
+thread_local DiagDraw g_diag_draw;
+thread_local int g_diag_query{-1};
+
+u64 DiagShader(const Tegra::Engines::Maxwell3D& maxwell3d, size_t stage) {
+    const auto& regs = maxwell3d.regs;
+    return (u64{regs.pipelines[stage].reserved[0] & 0xff} << 32) | regs.pipelines[stage].reserved[1];
+}
+
+bool DiagAblated(const Tegra::Engines::Maxwell3D& maxwell3d) {
+    auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    return diag.Ablated('v', DiagShader(maxwell3d, 1)) || diag.Ablated('p', DiagShader(maxwell3d, 5));
+}
+
+// Shows the constant buffers bound to a stage to the inspector (inspect.txt).
+void DiagObserveStage(Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& gpu_memory,
+                      size_t stage, u64 key) {
+    auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    const auto& info = maxwell3d.state.shader_stages[stage];
+    for (u32 slot = 0; slot < Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers; ++slot) {
+        const auto& buffer = info.const_buffers[slot];
+        if (!buffer.enabled || buffer.size == 0) {
+            continue;
+        }
+        std::vector<u32> words(std::min<u32>(buffer.size, 0x2000) / 4);
+        if (words.empty() || !gpu_memory.IsFullyMappedRange(buffer.address, words.size() * 4)) {
+            continue;
+        }
+        gpu_memory.ReadBlockUnsafe(buffer.address, words.data(), words.size() * 4);
+        diag.Observe(key, slot, words);
+    }
+}
+
+void DiagRecordDraw(Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& gpu_memory,
+                    const char* outcome, bool mesh) {
+    auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    const u64 vs = DiagShader(maxwell3d, 1);
+    const u64 ps = DiagShader(maxwell3d, 5);
+    {
+        const auto& rt = maxwell3d.regs.rt[0];
+        diag.Touch('v', vs, outcome, g_diag_draw.instances, g_diag_draw.vertices, rt.width, rt.height);
+        diag.Touch('p', ps, outcome, g_diag_draw.instances, g_diag_draw.vertices, rt.width, rt.height);
+        if (const u64 key = diag.ProgramKey(vs); diag.Inspecting(key)) {
+            DiagObserveStage(maxwell3d, gpu_memory, 0, key);
+        }
+        if (const u64 key = diag.ProgramKey(ps); diag.Inspecting(key)) {
+            DiagObserveStage(maxwell3d, gpu_memory, 4, key);
+        }
+    }
+    if (VideoCommon::Nx2Diag::CountersEnabled()) {
+        diag.Note(false, vs, ps, outcome, g_diag_draw.instances, g_diag_draw.vertices);
+    }
+    if (!diag.Capturing()) {
+        g_diag_query = -1;
+    } else {
+        const auto& regs = maxwell3d.regs;
+        diag.Row(fmt::format(
+            "{}\t{}\t{:#x}\t{:#x}\t{}\t{}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}\t{:016x}\t{:016x}",
+            diag.NextSeq(), g_diag_draw.kind, vs, ps, outcome, g_diag_draw.vertices,
+            g_diag_draw.instances, static_cast<u32>(maxwell3d.draw_manager.draw_state.topology),
+            regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height,
+            static_cast<u32>(regs.rt[0].format), regs.zeta_enable, regs.blend.enable[0],
+            regs.color_mask[0].raw, mesh ? "mesh" : "", diag.ProgramKey(vs), diag.ProgramKey(ps)),
+            std::exchange(g_diag_query, -1), vs, ps);
+    }
+}
+} // namespace
+
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
