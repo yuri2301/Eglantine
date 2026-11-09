@@ -13,6 +13,8 @@ on:
       - nx2
       - nx2-experimental
       - pitoco
+      # Test builds: replace the single "test-build" pre-release instead of adding a version.
+      - pitoco-test
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
@@ -73,7 +75,11 @@ jobs:
         # Build N is version 0.<N / 10>.<N % 10> (build 19 = 0.1.9), shown in the title bar.
         run: |
           n="${GITHUB_RUN_NUMBER}"
-          echo "PITOCO_VERSION=0.$((n / 10)).$((n % 10))" >> "$GITHUB_ENV"
+          if [ "${GITHUB_REF_NAME}" = pitoco-test ]; then
+            echo "PITOCO_VERSION=test ${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          else
+            echo "PITOCO_VERSION=0.$((n / 10)).$((n % 10))" >> "$GITHUB_ENV"
+          fi
 
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'linux')
@@ -638,9 +644,20 @@ jobs:
           The PGO builds are the same programs compiled with profile-guided optimization (clang plus Pitoco's profile); prefer them when your CPU supports it.
           EOF
 
+          title="Pitoco ${version} beta (prototype)"
+          if [ "${GITHUB_REF_NAME}" = pitoco-test ]; then
+            # One test release at a time, replaced by each test build; not a version.
+            tag=test-build
+            title="Pitoco test build (not a release)"
+            base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
+            sed -i "s|releases/download/v${version}-beta|releases/download/${tag}|g" notes.md
+            sed -i "1s|.*|Pitoco test build, not a release: \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.|" notes.md
+            gh release delete "${tag}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag || true
+          fi
+
           gh release create "${tag}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --prerelease \
-            --title "Pitoco ${version} beta (prototype)" \
+            --title "${title}" \
             --notes-file notes.md
