@@ -48,9 +48,9 @@ public:
         case Svc::ArbitrationType::DecrementAndWaitIfLessThan:
             R_RETURN(WaitIfLessThan(addr, static_cast<s32>(value), true, timeout));
         case Svc::ArbitrationType::WaitIfEqual:
-            R_RETURN(WaitIfEqual(addr, static_cast<s32>(value), false, timeout));
+            R_RETURN(WaitIfEqual(addr, static_cast<s32>(value), timeout, false));
         case Svc::ArbitrationType::WaitIfEqual64:
-            R_RETURN(WaitIfEqual(addr, value, true, timeout));
+            R_RETURN(WaitIfEqual(addr, value, timeout, true));
         default:
             UNREACHABLE();
         }
@@ -61,8 +61,7 @@ private:
     Result SignalAndIncrementIfEqual(uint64_t addr, s32 value, s32 count);
     Result SignalAndModifyByWaitingCountIfEqual(uint64_t addr, s32 value, s32 count);
     Result WaitIfLessThan(uint64_t addr, s32 value, bool decrement, s64 timeout);
-    /// Waits while the s32 (or, with is_64, the s64) at addr equals value.
-    Result WaitIfEqual(uint64_t addr, s64 value, bool is_64, s64 timeout);
+    Result WaitIfEqual(uint64_t addr, s64 value, s64 timeout, bool is_64_bit);
 
 private:
     ThreadTree m_tree;
