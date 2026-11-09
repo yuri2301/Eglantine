@@ -1365,28 +1365,6 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const bool done = upscale_temporally() ||
                       rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
     VideoCommon::g_blit_source_format.reset();
-    if (static u32 checked{}; checked++ == sample_at) {
-        const u64 size = u64{output->Width()} * output->Height() * 4;
-        if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {
-            rasterizer->FlushRegion(*device, size, VideoCommon::CacheType::All);
-        }
-        u32 nonzero{}, samples{}, changes{}, last{};
-        for (u64 offset = 0; offset < size; offset += 4096 + 4) {
-            const u32 word = memory_manager.Read<u32>(output->Address() + offset);
-            ++samples;
-            nonzero += word != 0;
-            changes += word != last;
-            last = word;
-        }
-        LOG_INFO(HW_GPU, "Upscale fallback output after blit: {}/{} non-zero, {} changes", nonzero, samples,
-                 changes);
-    }
-    // Debug: trace the draws that follow one upscale (EDEN_NX2_RT_TRACE_AFTER_UPSCALE).
-    static const u32 trace_at = [] {
-        const char* value = std::getenv("EDEN_NX2_TRACE_AFTER_UPSCALE");
-        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 30U;
-    }();
-    if (static u32 count{}; ++count == trace_at) g_nx2_trace_draws_after_upscale = 40;
     // Once per program and image pair (gameplay brings programs and targets the title has not).
     static std::set<std::tuple<GPUVAddr, GPUVAddr, GPUVAddr>> logged;
     if (logged.emplace(program, input->Address(), output->Address()).second && logged.size() <= 64) {
