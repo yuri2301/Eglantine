@@ -6,7 +6,7 @@ A fork of [Djihads80/Eglantine](https://github.com/Djihads80/Eglantine) (Switch 
 **Intel i5-10400F (Comet Lake, 6C/12T, AVX2/FMA/BMI2, no AVX-512) · RTX 3060 12 GB · 16 GB RAM · Windows 11.**
 Goal: stable 60 fps in **Mario Kart World** (MKW, title 0400C3F00006E000). Second test game: Donkey Kong Bananza (DKB, purple screen/crash, not investigated yet).
 
-Last updated: 2026-11-04, after build 14.
+Last updated: 2026-11-10, after Pitoco 0.3.6.
 
 ## How builds and tests work
 - Push to branch `nx2-experimental` on `yuri2301/Eglantine`. GitHub Actions (`.github/workflows/release-binaries.yml`) builds **Windows only** and publishes release `build-N`.
@@ -200,6 +200,44 @@ Design: shaders translate the guest GPU address themselves through a **guest add
 - Different SDK point release: NintendoWare 19.3.2 (MKW 19.3.3), no byte-identical 4 KiB code pages with MKW. Native macros (step 3) must therefore match the macros uploaded at run time by hash, not offsets in the executable.
 - Middleware: Havok 2022.1 (Physics, Animation, Cloth), sead, NintendoWare Vfx2/G3d2/Ui2d, SMAA_For_NDSR. MKW instead has Pia, NPLN and NintendoWare_Ndsr.
 - Steps 2–4 (GPU indirect draws, native macros, spread draw preparation) work at the NVN/GPU level, so they should help DKB too once it boots. The purple screen still needs a DKB log.
+
+## 0.3.1 to 0.3.6: Ocarina and MKW measured (2026-11-09/10)
+
+**What shipped.** 0.2.2–0.2.5 broke a working 0.2.1 and were reverted. 0.3.1 merged upstream Djihads80/Eglantine (Ocarina boot, cutscene videos, shader forms, the split's idle-hook handshake). It was taken off `pitoco` on a wrong conclusion, then restored as **0.3.6** = 0.3.1 plus one change: Ocarina follows "prepare the next frame while the GPU works" (`nx2_frames_ahead`) instead of always waiting for each frame. With the setting off (the user's config), 0.3.6 plays like 0.3.1.
+
+**Where 0.3.x keeps its data.** `%APPDATA%\eglantine` (config, logs, caches), not `%APPDATA%\eden`. `eden-cli` 0.3.x crashes at boot with `memory_layout_mode=2` (host_memory backing-size assert); `pitoco.exe` is fine with it.
+
+**Ocarina (docked, Kokiri spawn, RTX 3060).**
+
+| | Waiting for each frame (0.3.1/0.3.6 default) | Running a frame ahead |
+|---|---|---|
+| fps | ~23 | ~31 |
+| Frame | 44 ms | 32 ms |
+| Game blocked on the GPU fence per frame | 27 ms | 0 ms |
+| GPU back thread idle | 434 ms/s | 127 ms/s |
+| Front waits (macro DMA read / writers / semaphore) | 230 / 126 / 50 ms/s | 343 / 250 / 92 ms/s |
+
+- The limit is serialization, not drawing: draws cost ~0.9 µs on the back (MKW: ~4.5 µs). The game waits on the GPU threads, which take turns. The user's own 0.3.6 session: 36–54 ms frames, 18–35 ms of them on the fence.
+- The game logic targets 60, so below 60 the game plays slowed rather than stuttering. Lichii plays at normal speed with stutter because it bundles a "Dynamic FPS" patch for Ocarina; Pitoco does not, by choice.
+- Flashes when running ahead: only the foliage (ground grass, falling leaves) turns white for one frame. Its lists are built on the GPU from data the game rewrites while the GPU thread still reads the previous frame. `EDEN_NX2_FLASH_WATCH` caught two, but its median stays 0 (it flags every bright scene) and its per-frame readback slows the game enough to trip a game panic.
+- Front macro DMA reads (`Maxwell3D::FrontDmaRead`) drain the back because the words may be written by queued work (indirect draw arguments from a culling dispatch). Only the part of those waits that reads memory no queued work writes can be cut; the rest needs GPU-side indirect draws instead.
+
+**MKW (user's sessions on pitoco.exe 0.3.1/0.3.6).** ~28 fps in Grand Prix, open world almost 30 and mostly steady. Per-draw bound: back thread 380–460 ms/s on 3D 0x585 at 3.7–5 µs per draw (~3,600 draws per frame). Open-world hitches follow pipeline builds (430–720 per 5 minutes).
+
+**Tried and dropped (do not retry as-is).**
+- Skipping the writers wait for command lists on pages seen CPU-written 64 times: 22 fps vs 25.6 in MKW (waits moved to drains and semaphores), one trusted page turned out GPU-written, Ocarina panicked.
+- Ocarina's matrix shaders forced on over 0.2.1, plus opcode 0x4a4: black from ~265 s. 0.3.1's own handling works.
+- Lichii's lowering of the 28 shaders Ocarina rejected after its cutscene, ported onto 0.2.1: matched Lichii instruction for instruction, but 0.3.1 already lowers all 31 forms identically.
+- Frame overlap guard (guest writes to pages the frame in flight may read wait for its fence): the guarded set grew from 3,000 to 28,000 pages and writes waited 3–5 times per frame (20–56 ms each): 12 fps. A workable version must guard only what the frame in flight actually reads.
+
+**Next directions (Pitoco's own design, each measured before release).**
+1. Ocarina: split the front's macro-read waits into avoidable and real dependencies (log the read address and whether queued work writes it), then wait only on the real ones.
+2. Real dependencies (GPU-built draw counts): hand them to Vulkan as indirect draws so the CPU never reads GPU results.
+3. MKW: cheaper per-draw work on the back, then draw recording spread over more threads; open world: pipeline building.
+4. Endgame: translate repeated command lists once and replay them (Pitoco at its best works as a runtime translator).
+5. Building locally (Visual Studio 2022 is installed) would cut each attempt from 26–45 min on GitHub to a few minutes and keep experiments off the releases page; needs ~20–30 GB free.
+
+**Unattended runs.** `bench/oot_031_profile.sh` syncs `%APPDATA%\eglantine\config\qt-config.ini` into `sdl2-config.ini` (backup `sdl2-config.ini.before-sync-20261109`) and keeps `memory_layout_mode=0` for eden-cli. `keys/oot-play.txt` loads the save and leaves Link standing at the Kokiri spawn; the old `oot-cutscene.txt` ends in the inventory menu once the game runs at normal speed.
 
 ## Working rules (from the user)
 - No recommended settings. Each build is tested on the user's own setup unchanged, so a log compares builds, not settings.
