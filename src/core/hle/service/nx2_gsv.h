@@ -33,6 +33,7 @@
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/device_memory.h"
+#include "core/memory.h"
 #include "video_core/nx2_diag.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -1752,7 +1753,9 @@ private:
         // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
         // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
         // Ocarina of Time a frame ahead rewrote data the GPU thread still read for this frame, and
-        // the frame rendered with the next one's (one-frame white or overexposed flashes).
+        // the frame rendered with the next one's (one-frame white flashes of its foliage). It
+        // waits for each frame unless running ahead is on, where the frame guard below makes
+        // its writes to that data wait for the frame instead.
         constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
         constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
         int frames_ahead = frames_ahead_env != -1
@@ -1762,10 +1765,12 @@ private:
                                       ? 1
                                       : -1);
         const u64 app_program_id = system.GetApplicationProcessProgramID();
-        if (frames_ahead_env == -1 && (app_program_id == DonkeyKongBananzaProgramId ||
-                                       app_program_id == OcarinaOfTimeProgramId)) {
+        if (frames_ahead_env == -1 &&
+            (app_program_id == DonkeyKongBananzaProgramId ||
+             (app_program_id == OcarinaOfTimeProgramId && frames_ahead != 1))) {
             frames_ahead = 0;
         }
+        auto& guest_memory = system.ApplicationMemory();
         const auto entered = std::chrono::steady_clock::now();
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
@@ -1782,11 +1787,23 @@ private:
                                     !system.Host1x().GetSyncpointManager().IsReadyGuest(
                                         m_previous_fence_id, m_previous_fence_value);
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
+            // The previous frame is done: its guard has nothing left to protect.
+            guest_memory.DisarmFrameGuard();
             if (gpu_behind) {
                 WaitForFrame(~w[22], w[24]);
+            } else if (frames_ahead == 1 && ~w[22] < 192) {
+                // Running ahead of this frame: the game's writes to memory the GPU thread may
+                // still read for it wait for its fence first (Memory::ArmFrameGuard).
+                guest_memory.ArmFrameGuard(
+                    [&system = system, fence_id = ~w[22], fence_value = w[24]] {
+                        return WaitForGuestFence(system, fence_id, fence_value);
+                    });
             }
-        } else if (frames_ahead == 0) {
-            WaitForFrame(~w[22], w[24]);
+        } else {
+            guest_memory.DisarmFrameGuard();
+            if (frames_ahead == 0) {
+                WaitForFrame(~w[22], w[24]);
+            }
         }
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
@@ -1827,6 +1844,13 @@ private:
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead);
+                if (const auto guard = guest_memory.TakeFrameGuardStats(); guard.arms != 0) {
+                    LOG_INFO(Service,
+                             "nx2:vi2 frame guard: {} frames guarded ({} pages on average), {} "
+                             "guest writes waited for their frame ({} us on average, {} gave up)",
+                             guard.arms, guard.pages / guard.arms, guard.waits,
+                             guard.waits != 0 ? guard.wait_us / guard.waits : 0, guard.timeouts);
+                }
                 m_stats = {.last_present = entered};
                 if (Settings::ParallelExecutionActive()) {
                     Common::UpdateKeepInRam();
@@ -1919,6 +1943,35 @@ private:
     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
     /// Returns whether the fence was reached.
+    /// The frame guard's wait (Memory::ArmFrameGuard), on a game thread about to write data the
+    /// GPU thread may still read: blocks until it reaches the frame's fence, 250 ms at most.
+    static bool WaitForGuestFence(Core::System& system, u32 fence_id, u32 fence_value) {
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        if (syncpoints.IsReadyGuest(fence_id, fence_value)) {
+            return true;
+        }
+        struct Wake {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool done{};
+        };
+        auto wake = std::make_shared<Wake>();
+        syncpoints.RegisterGuestAction(fence_id, fence_value, [wake] {
+            {
+                std::scoped_lock lk{wake->mutex};
+                wake->done = true;
+            }
+            wake->cv.notify_all();
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{250};
+        std::unique_lock lk{wake->mutex};
+        while (!wake->done && system.IsPoweredOn() &&
+               std::chrono::steady_clock::now() < deadline) {
+            wake->cv.wait_until(lk, deadline);
+        }
+        return syncpoints.IsReadyGuest(fence_id, fence_value);
+    }
+
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
             return true;

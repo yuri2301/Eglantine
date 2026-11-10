@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -488,6 +489,25 @@ public:
      * (fastmem only), so that the read reaches the GPU's reactive flush once.
      */
     void RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size);
+
+    /**
+     * Frame overlap guard, for a game running a frame ahead of the GPU thread: until the frame in
+     * flight is done, a guest write to memory that frame may still read (rasterizer cached pages,
+     * and pages written while cached that were not cached again) first calls wait_done, which
+     * returns once that frame's fence is reached (false when it gave up).
+     */
+    void ArmFrameGuard(std::function<bool()> wait_done);
+    void DisarmFrameGuard();
+
+    struct FrameGuardStats {
+        u64 arms{};
+        u64 pages{};
+        u64 waits{};
+        u64 wait_us{};
+        u64 timeouts{};
+    };
+    /// Counts since the previous call.
+    FrameGuardStats TakeFrameGuardStats();
 
     /**
      * Marks each page within the specified address range as debug or non-debug.
