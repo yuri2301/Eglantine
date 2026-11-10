@@ -1752,7 +1752,8 @@ private:
         // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
         // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
         // Ocarina of Time a frame ahead rewrote data the GPU thread still read for this frame, and
-        // the frame rendered with the next one's (one-frame white or overexposed flashes).
+        // the frame rendered with the next one's (one-frame white flashes of its foliage), so it
+        // waits for each frame unless "prepare the next frame while the GPU works" is on.
         constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
         constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
         int frames_ahead = frames_ahead_env != -1
@@ -1763,7 +1764,7 @@ private:
                                       : -1);
         const u64 app_program_id = system.GetApplicationProcessProgramID();
         if (frames_ahead_env == -1 && (app_program_id == DonkeyKongBananzaProgramId ||
-                                       app_program_id == OcarinaOfTimeProgramId)) {
+                                       (app_program_id == OcarinaOfTimeProgramId && frames_ahead != 1))) {
             frames_ahead = 0;
         }
         const auto entered = std::chrono::steady_clock::now();
