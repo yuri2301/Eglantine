@@ -11,9 +11,9 @@
 
 #include <filesystem>
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QMainWindow>
 #include <QMessageBox>
-#include <QFutureWatcher>
 #include <QPushButton>
 #include <QTimer>
 #include <QTranslator>
