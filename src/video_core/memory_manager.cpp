@@ -12,6 +12,7 @@
 #include "common/assert.h"
 #include "common/logging.h"
 #include "core/core.h"
+#include "core/nx2_frame_hazard.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "memory_manager.h"
@@ -425,6 +426,10 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         // A device page without memory (a sparse block nobody wrote yet) reads zero.
         if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
             std::memcpy(dest_buffer, physical, copy_amount);
+            if (Core::Nx2FrameHazard::Active()) [[unlikely]] {
+                Core::Nx2FrameHazard::Overlay(dev_addr_base, dest_buffer, copy_amount, Core::Nx2FrameHazard::GpuRead,
+                                              [this](u64 page) -> const u8* { return memory.GetPointer<u8>(page); });
+            }
         } else {
             std::memset(dest_buffer, 0, copy_amount);
         }
@@ -441,6 +446,10 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
                                                              : nullptr;
         if (physical != nullptr) [[likely]] {
             std::memcpy(dest_buffer, physical, copy_amount);
+            if (Core::Nx2FrameHazard::Active()) [[unlikely]] {
+                Core::Nx2FrameHazard::Overlay(dev_addr_base, dest_buffer, copy_amount, Core::Nx2FrameHazard::GpuRead,
+                                              [this](u64 page) -> const u8* { return memory.GetPointer<u8>(page); });
+            }
         } else {
             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
         }

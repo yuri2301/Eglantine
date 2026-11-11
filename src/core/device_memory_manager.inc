@@ -23,6 +23,7 @@
 #include "core/device_memory.h"
 #include "core/device_memory_manager.h"
 #include "core/memory.h"
+#include "core/nx2_frame_hazard.h"
 
 namespace Core {
 
@@ -363,6 +364,11 @@ template <typename Traits>
 u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t size) {
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
+    // A page with a frame overlap copy has to be read through ReadBlock.
+    if (Core::Nx2FrameHazard::Overlay(src_addr, nullptr, size, Core::Nx2FrameHazard::DeviceSpan,
+                                      [this](u64 page) -> const u8* { return GetPointer<u8>(page); })) {
+        return nullptr;
+    }
     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
         return GetPointer<u8>(src_addr);
     }
@@ -373,6 +379,11 @@ template <typename Traits>
 const u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t size) const {
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
+    // A page with a frame overlap copy has to be read through ReadBlock.
+    if (Core::Nx2FrameHazard::Overlay(src_addr, nullptr, size, Core::Nx2FrameHazard::DeviceSpan,
+                                      [this](u64 page) -> const u8* { return GetPointer<u8>(page); })) {
+        return nullptr;
+    }
     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
         return GetPointer<u8>(src_addr);
     }
@@ -466,6 +477,14 @@ void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto o
 template <typename Traits>
 void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, size_t size) {
     device_inter->FlushRegion(address, size);
+    // Frame overlap copies (core/nx2_frame_hazard.h) go over what was read.
+    void* const dest_begin = dest_pointer;
+    SCOPE_EXIT {
+        if (Core::Nx2FrameHazard::Active()) [[unlikely]] {
+            Core::Nx2FrameHazard::Overlay(address, dest_begin, size, Core::Nx2FrameHazard::DeviceRead,
+                                          [this](u64 page) -> const u8* { return GetPointer<u8>(page); });
+        }
+    };
     const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
     if (size <= Memory::YUZU_PAGESIZE - page_offset) {
         const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);
@@ -531,6 +550,14 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_pointer, size_t size) {
+    // Frame overlap copies (core/nx2_frame_hazard.h) go over what was read.
+    void* const dest_begin = dest_pointer;
+    SCOPE_EXIT {
+        if (Core::Nx2FrameHazard::Active()) [[unlikely]] {
+            Core::Nx2FrameHazard::Overlay(address, dest_begin, size, Core::Nx2FrameHazard::DeviceRead,
+                                          [this](u64 page) -> const u8* { return GetPointer<u8>(page); });
+        }
+    };
     const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
     if (size <= Memory::YUZU_PAGESIZE - page_offset) {
         const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);

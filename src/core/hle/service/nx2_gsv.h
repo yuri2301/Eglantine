@@ -57,6 +57,7 @@
 #include "core/hle/kernel/k_transfer_memory.h"
 #include "core/hle/kernel/svc_results.h"
 #include "core/memory.h"
+#include "core/nx2_frame_hazard.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/nx2_video_decoder.h"
 #include "video_core/nx2.h"
@@ -1752,8 +1753,9 @@ private:
         // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
         // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
         // Ocarina of Time a frame ahead rewrote data the GPU thread still read for this frame, and
-        // the frame rendered with the next one's (one-frame white flashes of its foliage), so it
-        // waits for each frame unless "prepare the next frame while the GPU works" is on.
+        // the frame rendered with the next one's (one-frame white flashes of its foliage). It waits
+        // for each frame unless "prepare the next frame while the GPU works" is on, where the GPU
+        // thread reads that data through frame overlap copies instead (below).
         constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
         constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
         int frames_ahead = frames_ahead_env != -1
@@ -1767,6 +1769,11 @@ private:
                                        (app_program_id == OcarinaOfTimeProgramId && frames_ahead != 1))) {
             frames_ahead = 0;
         }
+        // Running ahead, Ocarina of Time reads its foliage data through frame overlap copies.
+        const bool frame_overlap_copies =
+            app_program_id == OcarinaOfTimeProgramId &&
+            (Core::Nx2FrameHazard::copies_enabled || Core::Nx2FrameHazard::counting);
+        auto& guest_memory = system.ApplicationMemory();
         const auto entered = std::chrono::steady_clock::now();
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
@@ -1783,11 +1790,33 @@ private:
                                     !system.Host1x().GetSyncpointManager().IsReadyGuest(
                                         m_previous_fence_id, m_previous_fence_value);
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
+            guest_memory.DisarmFrameGuard();
             if (gpu_behind) {
                 WaitForFrame(~w[22], w[24]);
+            } else if (frame_overlap_copies && frames_ahead == 1 && ~w[22] < 192) {
+                // The game's first write to each page this frame may still read saves a copy the
+                // GPU thread reads until this frame's fence (core/nx2_frame_hazard.h).
+                const u64 serial = m_presents;
+                guest_memory.ArmFrameGuard(nullptr, serial);
+                system.Host1x().GetSyncpointManager().RegisterGuestAction(
+                    ~w[22], w[24], [&system = system, serial] {
+                        // Runs where the fence is signalled (the GPU thread's back, or here if
+                        // it already was): only the caches with their own locks.
+                        Core::Nx2FrameHazard::FrameDone(serial, [&system](u64 address, u64 size) {
+                            if (system.IsPoweredOn()) {
+                                system.GPU().Renderer().ReadRasterizer()->InvalidateRegion(
+                                    address, size,
+                                    VideoCommon::CacheType::BufferCache |
+                                        VideoCommon::CacheType::TextureCache);
+                            }
+                        });
+                    });
             }
-        } else if (frames_ahead == 0) {
-            WaitForFrame(~w[22], w[24]);
+        } else {
+            guest_memory.DisarmFrameGuard();
+            if (frames_ahead == 0) {
+                WaitForFrame(~w[22], w[24]);
+            }
         }
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
@@ -1828,6 +1857,26 @@ private:
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead);
+                if (Core::Nx2FrameHazard::counting) {
+                    const auto guard = guest_memory.TakeFrameGuardStats();
+                    const auto h = Core::Nx2FrameHazard::Take();
+                    using R = Core::Nx2FrameHazard::Reader;
+                    LOG_INFO(Service,
+                             "nx2:vi2 frame overlap: {} frames armed, {} guarded pages on average, "
+                             "{} trapped writes, {} pages copied; reads that took a copy: device {} ({} B), span {} ({} B), gpu {} ({} B), buffer "
+                             "pointer {} ({} B); {} distinct pages",
+                             guard.arms, guard.arms ? guard.pages / guard.arms : 0, guard.waits,
+                             h.recorded, h.hits[R::DeviceRead].count, h.hits[R::DeviceRead].bytes,
+                             h.hits[R::DeviceSpan].count, h.hits[R::DeviceSpan].bytes,
+                             h.hits[R::GpuRead].count, h.hits[R::GpuRead].bytes,
+                             h.hits[R::BufferPointer].count, h.hits[R::BufferPointer].bytes,
+                             h.distinct_pages);
+                    std::string top;
+                    for (const auto& [page, count] : h.top_pages) {
+                        top += fmt::format(" {:#x}:{}", page, count);
+                    }
+                    LOG_INFO(Service, "nx2:vi2 frame overlap top pages (device address:reads):{}", top);
+                }
                 m_stats = {.last_present = entered};
                 if (Settings::ParallelExecutionActive()) {
                     Common::UpdateKeepInRam();

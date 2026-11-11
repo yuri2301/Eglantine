@@ -6,7 +6,7 @@ A fork of [Djihads80/Eglantine](https://github.com/Djihads80/Eglantine) (Switch 
 **Intel i5-10400F (Comet Lake, 6C/12T, AVX2/FMA/BMI2, no AVX-512) · RTX 3060 12 GB · 16 GB RAM · Windows 11.**
 Goal: stable 60 fps in **Mario Kart World** (MKW, title 0400C3F00006E000). Second test game: Donkey Kong Bananza (DKB, purple screen/crash, not investigated yet).
 
-Last updated: 2026-11-10, after Pitoco 0.3.6.
+Last updated: 2026-11-11, frame overlap copies for Ocarina (after Pitoco 0.3.6).
 
 ## How builds and tests work
 - Push to branch `nx2-experimental` on `yuri2301/Eglantine`. GitHub Actions (`.github/workflows/release-binaries.yml`) builds **Windows only** and publishes release `build-N`.
@@ -201,6 +201,24 @@ Design: shaders translate the guest GPU address themselves through a **guest add
 - Middleware: Havok 2022.1 (Physics, Animation, Cloth), sead, NintendoWare Vfx2/G3d2/Ui2d, SMAA_For_NDSR. MKW instead has Pia, NPLN and NintendoWare_Ndsr.
 - Steps 2–4 (GPU indirect draws, native macros, spread draw preparation) work at the NVN/GPU level, so they should help DKB too once it boots. The purple screen still needs a DKB log.
 
+## Frame overlap copies: Ocarina runs a frame ahead without flashes (2026-11-11)
+
+**Cause, measured.** With `EDEN_NX2_FRAME_HAZARD=1` the present arms the frame guard in counting mode and every GPU-side read of guest memory checks what the game rewrote after the frame's present. At the Kokiri spawn, running ahead: ~280 pages (~1.1 MB) written per frame that the frame in flight still reads; ~750 reads per frame got the next frame's data, all through `DeviceMemoryManager::ReadBlock(Unsafe)` (buffer cache uploads), one hot page read ~385 times a frame and ~470 others ~3.5 times each. None through texture reads, spans or direct buffer pointers.
+
+**Fix (`core/nx2_frame_hazard.h`).** Running ahead (`nx2_frames_ahead` on), Ocarina's present arms the frame guard without a wait: the game's first write to a page the frame in flight may read saves a 4 KiB copy of it first. GPU-side reads put the copies over what they read (`ReadBlock`, `ReadBlockUnsafe`, `MemoryManager::ReadBlockImpl`; `GetSpan` and the buffer cache's direct pointers fall back to `ReadBlock` while a copy exists) until the frame's fence; there the copies go and their memory is marked written in the buffer and texture caches, so the next frame uploads the new data. Copying is ~1 MB of memcpy a frame. `EDEN_NX2_FRAME_OVERLAP=0` turns the copies off.
+
+**Measured (eden-cli, docked, Kokiri spawn, same build).**
+
+| | Waiting for each frame (0.3.6 default) | Running ahead with copies |
+|---|---|---|
+| Frame, normal memory mode | 44 ms (~23 fps) | 31.5 ms (~31 fps) |
+| Frame, fallback memory mode (14 GiB backing refused) | 66 ms (~15 fps) | 38.5 ms (~26 fps) |
+| Blocked on the GPU fence | 27–30 ms | 0 ms |
+
+No one-frame artifacts in 450 consecutive captured frames. The standing spawn did not show the flashes with the copies off either, so the visual check is the user's; the read counts above are the evidence on this side. eden-cli segfaults on close with and without the copies (pre-existing).
+
+**Fallback memory mode.** The 14 GiB backing needs that much commit (RAM + page file). After a reboot the user's page file is back to 16 GB (limit 32 GB, ~19 GB already used), `CreateFileMapping2` fails and Pitoco runs without fastmem: MKW dropped to 14 fps in that mode. A larger page file avoids it.
+
 ## 0.3.1 to 0.3.6: Ocarina and MKW measured (2026-11-09/10)
 
 **What shipped.** 0.2.2–0.2.5 broke a working 0.2.1 and were reverted. 0.3.1 merged upstream Djihads80/Eglantine (Ocarina boot, cutscene videos, shader forms, the split's idle-hook handshake). It was taken off `pitoco` on a wrong conclusion, then restored as **0.3.6** = 0.3.1 plus one change: Ocarina follows "prepare the next frame while the GPU works" (`nx2_frames_ahead`) instead of always waiting for each frame. With the setting off (the user's config), 0.3.6 plays like 0.3.1.
@@ -235,7 +253,7 @@ Design: shaders translate the guest GPU address themselves through a **guest add
 2. Real dependencies (GPU-built draw counts): hand them to Vulkan as indirect draws so the CPU never reads GPU results.
 3. MKW: cheaper per-draw work on the back, then draw recording spread over more threads; open world: pipeline building.
 4. Endgame: translate repeated command lists once and replay them (Pitoco at its best works as a runtime translator).
-5. Building locally (Visual Studio 2022 is installed) would cut each attempt from 26–45 min on GitHub to a few minutes and keep experiments off the releases page; needs ~20–30 GB free.
+5. Building locally: done (2026-11-10). MSVC eden-cli builds on the user's PC, first build 30 min, one-file rebuilds 20 s.
 
 **Unattended runs.** `bench/oot_031_profile.sh` syncs `%APPDATA%\eglantine\config\qt-config.ini` into `sdl2-config.ini` (backup `sdl2-config.ini.before-sync-20261109`) and keeps `memory_layout_mode=0` for eden-cli. `keys/oot-play.txt` loads the save and leaves Link standing at the Kokiri spawn; the old `oot-cutscene.txt` ends in the inventory menu once the game runs at normal speed.
 

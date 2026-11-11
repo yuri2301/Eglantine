@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -34,6 +35,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
+#include "core/nx2_frame_hazard.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
@@ -334,6 +336,9 @@ struct Memory::Impl {
     }
 
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
+        if (frame_guard_armed.load(std::memory_order_relaxed)) [[unlikely]] {
+            FrameGuardCheck(GetInteger(addr), size);
+        }
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
             LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
@@ -350,6 +355,9 @@ struct Memory::Impl {
     }
 
     bool ZeroBlock(const Common::ProcessAddress addr, const std::size_t size) {
+        if (frame_guard_armed.load(std::memory_order_relaxed)) [[unlikely]] {
+            FrameGuardCheck(GetInteger(addr), size);
+        }
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
             LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
@@ -502,6 +510,16 @@ struct Memory::Impl {
             if (cached && perm != Common::MemoryPermission{}) {
                 ProtectArmedPages(vaddr, size);
             }
+            if (!cached && frame_guard_armed.load(std::memory_order_acquire)) {
+                ReprotectGuardedPages(vaddr, size);
+            }
+        }
+        if (frame_guard_enabled.load(std::memory_order_relaxed)) {
+            if (cached) {
+                ForgetWrittenCachedPages(vaddr, size);
+            } else {
+                NoteWrittenCachedPages(vaddr, size);
+            }
         }
 
         // Iterate over a contiguous CPU address space, which corresponds to the specified GPU
@@ -640,6 +658,196 @@ struct Memory::Impl {
             it = armed_read_traps.erase(it);
             armed_read_trap_count.fetch_sub(1, std::memory_order_relaxed);
         }
+    }
+
+    // Frame overlap guard (Memory::ArmFrameGuard). written_cached_pages: pages that stopped being
+    // rasterizer cached (a guest write to them, mostly) and were not cached again since, so the
+    // GPU thread may still read them for the frame in flight. Tracked once a guard was armed.
+
+    void NoteWrittenCachedPages(u64 vaddr, u64 size) {
+        if (size == 0) {
+            return;
+        }
+        const u64 first = vaddr >> YUZU_PAGEBITS;
+        const u64 last = (vaddr + size - 1) >> YUZU_PAGEBITS;
+        std::scoped_lock lk{frame_guard_mutex};
+        for (u64 page = first; page <= last; ++page) {
+            written_cached_pages.insert(page);
+        }
+    }
+
+    void ForgetWrittenCachedPages(u64 vaddr, u64 size) {
+        if (size == 0) {
+            return;
+        }
+        const u64 first = vaddr >> YUZU_PAGEBITS;
+        const u64 last = (vaddr + size - 1) >> YUZU_PAGEBITS;
+        std::scoped_lock lk{frame_guard_mutex};
+        written_cached_pages.erase(written_cached_pages.lower_bound(first),
+                                   written_cached_pages.upper_bound(last));
+    }
+
+    /// Sets perm on the runs of consecutive pages in the sorted list (fastmem only).
+    void ProtectPageRuns(std::span<const u64> pages, Common::MemoryPermission perm) {
+        if (current_page_table->fastmem_arena == nullptr) {
+            return;
+        }
+        size_t index = 0;
+        while (index < pages.size()) {
+            size_t end = index + 1;
+            while (end < pages.size() && pages[end] == pages[end - 1] + 1) {
+                ++end;
+            }
+            host_buffer->Protect(pages[index] << YUZU_PAGEBITS, (end - index) << YUZU_PAGEBITS,
+                                 perm);
+            index = end;
+        }
+    }
+
+    void ArmFrameGuard(std::function<bool()> wait_done, u64 serial) {
+        frame_guard_enabled.store(true, std::memory_order_relaxed);
+        std::scoped_lock lk{frame_guard_mutex};
+        DisarmFrameGuardLocked();
+        // Pages still cached trap on their own (HandleRasterizerWrite); uncached ones written
+        // since they were cached lost their protection and get write protection back here.
+        guarded_pages.clear();
+        for (const u64 page : written_cached_pages) {
+            if (std::as_const(current_page_table->entries)[page].Type() ==
+                Common::PageType::Memory) {
+                guarded_pages.push_back(page);
+            }
+        }
+        ProtectPageRuns(guarded_pages, Common::MemoryPermission::Read);
+        frame_guard_wait = std::move(wait_done);
+        frame_guard_serial = serial;
+        ++frame_guard_generation;
+        ++frame_guard_stats.arms;
+        frame_guard_stats.pages += guarded_pages.size();
+        frame_guard_armed.store(true, std::memory_order_release);
+    }
+
+    void DisarmFrameGuardLocked() {
+        if (!frame_guard_armed.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+        std::vector<u64> still_uncached;
+        still_uncached.reserve(guarded_pages.size());
+        for (const u64 page : guarded_pages) {
+            if (std::as_const(current_page_table->entries)[page].Type() ==
+                Common::PageType::Memory) {
+                still_uncached.push_back(page);
+            }
+        }
+        ProtectPageRuns(still_uncached,
+                        Common::MemoryPermission::Read | Common::MemoryPermission::Write);
+        guarded_pages.clear();
+        frame_guard_wait = nullptr;
+    }
+
+    void DisarmFrameGuard() {
+        if (!frame_guard_armed.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::scoped_lock lk{frame_guard_mutex};
+        DisarmFrameGuardLocked();
+    }
+
+    /// Uncaching a guarded page gave it write permission back: take it away again.
+    void ReprotectGuardedPages(u64 vaddr, u64 size) {
+        const u64 first = vaddr >> YUZU_PAGEBITS;
+        const u64 last = (vaddr + size - 1) >> YUZU_PAGEBITS;
+        std::scoped_lock lk{frame_guard_mutex};
+        if (!frame_guard_armed.load(std::memory_order_relaxed)) {
+            return;
+        }
+        const auto begin = std::lower_bound(guarded_pages.begin(), guarded_pages.end(), first);
+        const auto end = std::upper_bound(begin, guarded_pages.end(), last);
+        ProtectPageRuns(std::span<const u64>(begin, end), Common::MemoryPermission::Read);
+    }
+
+    /// A guest write that may change data of the frame in flight: wait for that frame first.
+    /// Only guest cores wait; service threads may be what the GPU thread waits on.
+    /// Without a wait (counting mode), records the write (Nx2FrameHazard) and lets it through.
+    void FrameGuardWait(u64 vaddr, size_t size) {
+        std::function<bool()> wait;
+        u64 generation{};
+        {
+            std::scoped_lock lk{frame_guard_mutex};
+            if (!frame_guard_armed.load(std::memory_order_relaxed)) {
+                return;
+            }
+            if (!frame_guard_wait) {
+                const u64 first = vaddr >> YUZU_PAGEBITS;
+                const u64 last = (vaddr + size - 1) >> YUZU_PAGEBITS;
+                if (!gpu_device_memory) [[unlikely]] {
+                    gpu_device_memory = &system.Host1x().MemoryManager();
+                }
+                for (u64 page = first; page <= last; ++page) {
+                    const u8* const host = GetPointerSilent(page << YUZU_PAGEBITS);
+                    Nx2FrameHazard::Record(host, frame_guard_serial, [&](std::vector<u64>& out) {
+                        gpu_device_memory->ApplyOpOnPointer(
+                            host, frame_guard_scratch,
+                            [&](DAddr address) { out.push_back(address); });
+                    });
+                }
+                const auto begin =
+                    std::lower_bound(guarded_pages.begin(), guarded_pages.end(), first);
+                const auto end = std::upper_bound(begin, guarded_pages.end(), last);
+                if (begin != end) {
+                    ProtectPageRuns(std::span<const u64>(begin, end),
+                                    Common::MemoryPermission::Read |
+                                        Common::MemoryPermission::Write);
+                    guarded_pages.erase(begin, end);
+                }
+                ++frame_guard_stats.waits;
+                return;
+            }
+            if (system.GetCurrentHostThreadID() >= Core::Hardware::NUM_CPU_CORES) {
+                return;
+            }
+            wait = frame_guard_wait;
+            generation = frame_guard_generation;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        const bool reached = wait ? wait() : true;
+        const auto waited = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - start)
+                                .count();
+        std::scoped_lock lk{frame_guard_mutex};
+        ++frame_guard_stats.waits;
+        frame_guard_stats.wait_us += static_cast<u64>(waited);
+        frame_guard_stats.timeouts += reached ? 0 : 1;
+        if (generation == frame_guard_generation) {
+            DisarmFrameGuardLocked();
+        }
+    }
+
+    /// Slow-path writes to uncached pages: wait if a guarded page is among them.
+    void FrameGuardCheck(u64 vaddr, size_t size) {
+        if (size == 0) {
+            return;
+        }
+        const u64 first = vaddr >> YUZU_PAGEBITS;
+        const u64 last = (vaddr + size - 1) >> YUZU_PAGEBITS;
+        bool guarded = false;
+        {
+            std::scoped_lock lk{frame_guard_mutex};
+            if (!frame_guard_armed.load(std::memory_order_relaxed)) {
+                return;
+            }
+            const auto it = std::lower_bound(guarded_pages.begin(), guarded_pages.end(), first);
+            guarded = it != guarded_pages.end() && *it <= last;
+        }
+        if (guarded) {
+            FrameGuardWait(vaddr, size);
+        }
+    }
+
+    Memory::FrameGuardStats TakeFrameGuardStats() {
+        std::scoped_lock lk{frame_guard_mutex};
+        const auto stats = frame_guard_stats;
+        frame_guard_stats = {};
+        return stats;
     }
 
     /**
@@ -798,6 +1006,9 @@ struct Memory::Impl {
     template <typename T>
     inline void Write(Common::ProcessAddress vaddr, const T data) noexcept requires(std::is_trivially_copyable_v<T>) {
         const u64 addr = GetInteger(vaddr);
+        if (frame_guard_armed.load(std::memory_order_relaxed)) [[unlikely]] {
+            FrameGuardCheck(addr, sizeof(T));
+        }
         if (auto const ptr = GetPointerImpl(addr, [addr, data]() {
             LOG_ERROR(HW_Memory, "Unmapped Write{} @ {:#016x} = {:#016x}", sizeof(T) * 8, addr, u64(data));
         }, [&]() { HandleRasterizerWrite(addr, sizeof(T)); }); ptr) [[likely]]
@@ -806,6 +1017,9 @@ struct Memory::Impl {
 
     template <typename T>
     bool WriteExclusive(Common::ProcessAddress vaddr, const T data, const T expected) {
+        if (frame_guard_armed.load(std::memory_order_relaxed)) [[unlikely]] {
+            FrameGuardCheck(GetInteger(vaddr), sizeof(T));
+        }
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
             [vaddr, data]() {
@@ -820,6 +1034,9 @@ struct Memory::Impl {
     }
 
     bool WriteExclusive128(Common::ProcessAddress vaddr, const u128 data, const u128 expected) {
+        if (frame_guard_armed.load(std::memory_order_relaxed)) [[unlikely]] {
+            FrameGuardCheck(GetInteger(vaddr), sizeof(u128));
+        }
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
             [vaddr, data]() {
@@ -871,6 +1088,9 @@ struct Memory::Impl {
     }
 
     void HandleRasterizerWrite(VAddr v_address, size_t size) {
+        if (frame_guard_armed.load(std::memory_order_acquire)) [[unlikely]] {
+            FrameGuardWait(v_address, size);
+        }
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
@@ -945,6 +1165,16 @@ struct Memory::Impl {
     std::atomic<size_t> armed_read_trap_count{};
     std::mutex read_trap_mutex;
     std::array<GPUDirtyState, Core::Hardware::NUM_CPU_CORES> rasterizer_write_areas{};
+    std::mutex frame_guard_mutex;
+    std::set<u64> written_cached_pages;
+    std::vector<u64> guarded_pages;
+    std::function<bool()> frame_guard_wait;
+    u64 frame_guard_serial{};
+    Common::ScratchBuffer<u32> frame_guard_scratch;
+    u64 frame_guard_generation{};
+    Memory::FrameGuardStats frame_guard_stats{};
+    std::atomic<bool> frame_guard_enabled{};
+    std::atomic<bool> frame_guard_armed{};
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
     std::mutex sys_core_guard;
@@ -1138,6 +1368,18 @@ void Memory::RasterizerMarkRegionCached(Common::ProcessAddress vaddr, u64 size, 
 
 void Memory::RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size) {
     impl->RasterizerArmReadTraps(GetInteger(vaddr), size);
+}
+
+void Memory::ArmFrameGuard(std::function<bool()> wait_done, u64 serial) {
+    impl->ArmFrameGuard(std::move(wait_done), serial);
+}
+
+void Memory::DisarmFrameGuard() {
+    impl->DisarmFrameGuard();
+}
+
+Memory::FrameGuardStats Memory::TakeFrameGuardStats() {
+    return impl->TakeFrameGuardStats();
 }
 
 void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug) {

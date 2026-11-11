@@ -586,6 +586,9 @@ private:
     [[nodiscard]] TextureBufferBinding GetTextureBufferBinding(GPUVAddr gpu_addr, u32 size,
                                                                PixelFormat format);
 
+    /// Whether a frame overlap copy (core/nx2_frame_hazard.h) covers part of the range.
+    [[nodiscard]] bool HasFrameOverlapCopy(DAddr device_addr, size_t size);
+
     [[nodiscard]] std::span<const u8> ImmediateBufferWithData(DAddr device_addr, size_t size);
 
     [[nodiscard]] std::span<u8> ImmediateBuffer(size_t wanted_capacity);

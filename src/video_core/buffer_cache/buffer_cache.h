@@ -17,6 +17,7 @@
 #include <fmt/ranges.h>
 
 #include "common/range_sets.inc"
+#include "core/nx2_frame_hazard.h"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/uniform_stream_reuse.h"
 #include "video_core/gpu_split.h"
@@ -2393,7 +2394,8 @@ void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
         for (const BufferCopy& copy : copies) {
             std::span<const u8> upload_span;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
-            if (IsRangeGranular(device_addr, copy.size)) {
+            // Pages with a frame overlap copy are read through ReadBlockUnsafe.
+            if (IsRangeGranular(device_addr, copy.size) && !HasFrameOverlapCopy(device_addr, copy.size)) {
                 auto* const ptr = device_memory.GetPointer<u8>(device_addr);
                 if (ptr != nullptr) {
                     upload_span = std::span(ptr, copy.size);
@@ -2799,10 +2801,21 @@ TextureBufferBinding BufferCache<P>::GetTextureBufferBinding(GPUVAddr gpu_addr, 
 }
 
 template <class P>
+bool BufferCache<P>::HasFrameOverlapCopy(DAddr device_addr, size_t size) {
+    return Core::Nx2FrameHazard::Active() &&
+           Core::Nx2FrameHazard::Overlay(device_addr, nullptr, size,
+                                         Core::Nx2FrameHazard::BufferPointer,
+                                         [this](u64 page) -> const u8* {
+                                             return device_memory.template GetPointer<u8>(page);
+                                         });
+}
+
+template <class P>
 std::span<const u8> BufferCache<P>::ImmediateBufferWithData(DAddr device_addr, size_t size) {
     u8* const base_pointer = device_memory.GetPointer<u8>(device_addr);
-    if (IsRangeGranular(device_addr, size) ||
-        base_pointer + size == device_memory.GetPointer<u8>(device_addr + size)) {
+    if (!HasFrameOverlapCopy(device_addr, size) &&
+        (IsRangeGranular(device_addr, size) ||
+         base_pointer + size == device_memory.GetPointer<u8>(device_addr + size))) {
         return std::span(base_pointer, size);
     } else {
         const std::span<u8> span = ImmediateBuffer(size);
