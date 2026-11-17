@@ -72,7 +72,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "method sink", "deferred calls",
 };
 
-// "Log performance and memory every 10 seconds" (nx2_gpu_profiler, on by default in this fork);
+// "Log performance and memory every 10 seconds" (nx2_gpu_profiler, off by default: its timers cost
+// ~5% of each GPU thread);
 // EDEN_NX2_GPU_PROFILE=0/1 overrides it. Read on first use (the GPU thread's first command, after
 // the configuration is loaded) and kept: Enabled() runs several times per method write.
 inline bool ReadEnabled() {

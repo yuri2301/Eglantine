@@ -667,7 +667,7 @@ struct Values {
     SwitchableSetting<bool> nx2_read_ahead_gpu_commands{linkage, false,
                                                         "nx2_read_ahead_gpu_commands",
                                                         Category::Nx2Rig};
-    SwitchableSetting<bool> nx2_gpu_profiler{linkage, true, "nx2_gpu_profiler", Category::Nx2Rig};
+    SwitchableSetting<bool> nx2_gpu_profiler{linkage, false, "nx2_gpu_profiler", Category::Nx2Rig};
 
     // Renderer Hacks //
     SwitchableSetting<GpuClock> gpu_clock{linkage,
