@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/service/nx2_oot_time.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
 
@@ -205,6 +207,40 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
+    // Ocarina of Time's step from the measured frame time (nx2_oot_time.h): applied only to the
+    // known build with every word as expected, so a mod already patching these words wins.
+    u64 oot_delta_offset = 0;
+    if (name == "main" && process.GetProgramId() == Service::Nx2OotTime::ProgramId &&
+        Service::Nx2OotTime::Enabled()) {
+        namespace OotTime = Service::Nx2OotTime;
+        const auto word_at = [&](u64 offset) -> std::optional<u32> {
+            if (module_start + offset + sizeof(u32) > codeset.memory.size()) {
+                return std::nullopt;
+            }
+            u32 word;
+            std::memcpy(&word, codeset.memory.data() + module_start + offset, sizeof(word));
+            return word;
+        };
+        const bool build_matches = std::equal(OotTime::BuildId.begin(), OotTime::BuildId.end(),
+                                              nso_header.build_id.begin());
+        const bool words_match =
+            build_matches && std::ranges::all_of(OotTime::Patch, [&](const auto& word) {
+                return word_at(word.offset) == word.original;
+            });
+        if (words_match) {
+            for (const auto& word : OotTime::Patch) {
+                std::memcpy(codeset.memory.data() + module_start + word.offset, &word.replacement,
+                            sizeof(word.replacement));
+            }
+            oot_delta_offset = module_start + OotTime::DeltaOffset;
+            LOG_INFO(Loader, "Ocarina of Time: game speed follows the frame time");
+        } else {
+            LOG_WARNING(Loader, "Ocarina of Time real-time patch skipped: {}",
+                        build_matches ? "instructions differ (a mod patches them?)"
+                                      : "unsupported build");
+        }
+    }
+
     // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Dynamic FPS lets it
     // choose using the whole frame time (CPU + GPU wait) instead of its CPU time alone.
     // Match the instruction sequence instead of relying on a title-version-specific address.
@@ -339,6 +375,10 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Load codeset for current process
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
+    if (name == "main" && process.GetProgramId() == Service::Nx2OotTime::ProgramId) {
+        Service::Nx2OotTime::delta_address.store(
+            oot_delta_offset != 0 ? load_base + oot_delta_offset : 0, std::memory_order_relaxed);
+    }
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);
     }
