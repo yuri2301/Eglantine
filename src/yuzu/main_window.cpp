@@ -8,6 +8,7 @@
 #undef VMA_IMPLEMENTATION
 #endif
 
+#include <cstdlib>
 #include <boost/algorithm/string/split.hpp>
 #include "common/fs/path_util.h"
 #include "common/settings.h"
@@ -2226,6 +2227,12 @@ void MainWindow::TerminateEmulationThread() {
         LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
         QtCommon::emu_thread->terminate();
         QtCommon::emu_thread->wait();
+        // The game's memory stays committed until the process ends; a Pitoco left open in the
+        // background then made the next game fail to allocate its own.
+        emulation_abandoned = true;
+        QMessageBox::warning(this, tr("The game didn't stop cleanly"),
+                             tr("Its memory stays in use until Pitoco closes. Close Pitoco "
+                                "before starting another game."));
     }
 }
 
@@ -5019,6 +5026,15 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     game_list->SaveInterfaceLayout();
     UISettings::SaveWindowState();
     hotkey_registry.SaveHotkeys();
+
+    if (emulation_abandoned) {
+        // The terminated game's threads and memory can't be shut down: the normal teardown
+        // would wait on them and leave the process running, holding that memory.
+        config->SaveAllValues();
+        LOG_WARNING(Frontend, "Ending the process: a game's emulation thread was terminated");
+        Common::Log::Stop();
+        std::_Exit(0);
+    }
 
     // Unload controllers early
     controller_dialog->UnloadController();

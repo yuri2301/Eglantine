@@ -552,6 +552,9 @@ private:
     bool emulation_running = false;
     bool boot_in_progress = false;
     bool close_pending = false;
+    // A game's emulation thread had to be terminated: its guest memory (up to 13 GiB for a
+    // Switch 2 game) can't be released, so closing the window ends the process at once.
+    bool emulation_abandoned = false;
     // The path to the game currently running
     QString current_game_path;
     // Whether a user was set on the command line (skips UserSelector if it's forced to show up)
