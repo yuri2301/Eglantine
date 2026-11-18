@@ -1253,9 +1253,17 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         const char* v = std::getenv("EDEN_NX2_BANK_REUPLOAD");
         return v != nullptr ? v[0] : '1';
     }();
+    // Asked at most once per bind (a tracker walk on every uniform buffer of every draw): marking
+    // the bank CPU-modified below leaves its GPU-modified state as it was.
+    int gpu_modified = -1;
+    const auto region_gpu_modified = [&] {
+        if (gpu_modified < 0) {
+            gpu_modified = memory_tracker.IsRegionGpuModified(device_addr, size) ? 1 : 0;
+        }
+        return gpu_modified != 0;
+    };
     const bool native_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
-                             gpu_memory->UsesNativeTiling() &&
-                             !memory_tracker.IsRegionGpuModified(device_addr, size);
+                             gpu_memory->UsesNativeTiling() && !region_gpu_modified();
     if (bank_mode != '0' && native_bank &&
         (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) &&
         (bank_mode == '2' || bank_mode == '3' ||
@@ -1284,7 +1292,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const bool use_fast_buffer =
         needs_alignment_stream ||
         (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size &&
-         !memory_tracker.IsRegionGpuModified(device_addr, size));
+         !region_gpu_modified());
     if (use_fast_buffer) {
         if constexpr (IS_OPENGL) {
             if (runtime.HasFastBufferSubData()) {
