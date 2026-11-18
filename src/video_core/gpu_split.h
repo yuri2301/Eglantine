@@ -252,6 +252,22 @@ private:
     alignas(128) std::atomic<bool> back_waiting{};
     std::atomic<u32> wake{};
     std::jthread back_thread;
+    /// The front sleeps on front_wake after a short spin (FrontWait); the back bumps it when it
+    /// moves `consumed`, goes quiet or stops while front_waiting is set.
+    alignas(128) std::atomic<bool> front_waiting{};
+    std::atomic<u32> front_wake{};
+
+    /// Back side: wakes a front sleeping in FrontWait.
+    void WakeFront() {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (front_waiting.load(std::memory_order_seq_cst)) {
+            front_wake.fetch_add(1, std::memory_order_seq_cst);
+            front_wake.notify_one();
+        }
+    }
+    /// Front side: spins `spins` pauses on `done`, then sleeps until the back makes progress.
+    template <typename Done>
+    void FrontWait(u32 spins, Done&& done);
 };
 
 } // namespace VideoCommon

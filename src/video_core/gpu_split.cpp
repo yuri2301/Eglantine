@@ -284,6 +284,40 @@ u64* GpuSplit::ReserveSlow(size_t words) {
     return &ring[index];
 }
 
+// The front's waits for the back (ring space, Drain, WaitForWriters) spin briefly, then sleep
+// until the back stores progress. They used to yield in a loop instead: on a 6-core CPU that
+// kept a core busy that the back or the game's threads needed (about 30% of the front's samples
+// in a Mario Kart World race were in that loop), and a yield can return a scheduler quantum
+// late. EDEN_NX2_FRONT_SLEEP=0 brings the yield loop back.
+static const bool front_sleep = [] {
+    const char* value = std::getenv("EDEN_NX2_FRONT_SLEEP");
+    return value == nullptr || value[0] != '0';
+}();
+
+template <typename Done>
+void GpuSplit::FrontWait(u32 spins, Done&& done) {
+    for (u32 spin = 0; spin < spins; ++spin) {
+        if (done()) {
+            return;
+        }
+        Pause();
+    }
+    while (!done()) {
+        if (!front_sleep) {
+            std::this_thread::yield();
+            continue;
+        }
+        // WakeFront bumps front_wake once it sees front_waiting: read it before the last look
+        // at the condition, so progress in between ends the wait at once.
+        front_waiting.store(true, std::memory_order_seq_cst);
+        const u32 seen = front_wake.load(std::memory_order_seq_cst);
+        if (!done()) {
+            front_wake.wait(seen, std::memory_order_seq_cst);
+        }
+        front_waiting.store(false, std::memory_order_relaxed);
+    }
+}
+
 void GpuSplit::WaitForSpace(size_t words) {
     if (write_position + words - consumed_cache <= RingWords) {
         return;
@@ -292,19 +326,12 @@ void GpuSplit::WaitForSpace(size_t words) {
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
     const bool profiling = Nx2Profile::Enabled();
     const u64 start = profiling ? Nx2Profile::Now() : 0;
-    for (u32 spins = 0;; ++spins) {
+    FrontWait(4096, [&] {
         consumed_cache = consumed.load(std::memory_order_acquire);
-        if (write_position + words - consumed_cache <= RingWords) {
-            if (profiling) {
-                Nx2Profile::AddDrain(Nx2Profile::DrainReason::RingFull, Nx2Profile::Now() - start);
-            }
-            return;
-        }
-        if (spins < 4096) {
-            Pause();
-        } else {
-            std::this_thread::yield();
-        }
+        return write_position + words - consumed_cache <= RingWords;
+    });
+    if (profiling) {
+        Nx2Profile::AddDrain(Nx2Profile::DrainReason::RingFull, Nx2Profile::Now() - start);
     }
 }
 
@@ -333,26 +360,23 @@ void GpuSplit::Drain(Nx2Profile::DrainReason reason) {
     const bool profiling = Nx2Profile::Enabled();
     const u64 start = profiling ? Nx2Profile::Now() : 0;
     bool hook_asked = false;
-    for (u32 spins = 0;; ++spins) {
+    FrontWait(16384, [&] {
         consumed_cache = consumed.load(std::memory_order_acquire);
-        if (consumed_cache == write_position) {
-            if (BackQuiet()) {
-                publish_every = 8;
-                if (profiling) {
-                    Nx2Profile::AddDrain(reason, Nx2Profile::Now() - start);
-                }
-                return;
-            }
-            if (!hook_asked) {
-                RequestIdleHook();
-                hook_asked = true;
-            }
+        if (consumed_cache != write_position) {
+            return false;
         }
-        if (spins < 16384) {
-            Pause();
-        } else {
-            std::this_thread::yield();
+        if (BackQuiet()) {
+            return true;
         }
+        if (!hook_asked) {
+            RequestIdleHook();
+            hook_asked = true;
+        }
+        return false;
+    });
+    publish_every = 8;
+    if (profiling) {
+        Nx2Profile::AddDrain(reason, Nx2Profile::Now() - start);
     }
 }
 
@@ -365,21 +389,15 @@ bool GpuSplit::WaitForWriters() {
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
     const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
-    for (u32 spins = 0;; ++spins) {
+    FrontWait(16384, [&] {
         consumed_cache = consumed.load(std::memory_order_acquire);
-        if (consumed_cache >= target) {
-            wait_target.store(~u64{0}, std::memory_order_relaxed);
-            if (start != 0) {
-                Nx2Profile::AddDrain(Nx2Profile::DrainReason::Writers, Nx2Profile::Now() - start);
-            }
-            return true;
-        }
-        if (spins < 16384) {
-            Pause();
-        } else {
-            std::this_thread::yield();
-        }
+        return consumed_cache >= target;
+    });
+    wait_target.store(~u64{0}, std::memory_order_relaxed);
+    if (start != 0) {
+        Nx2Profile::AddDrain(Nx2Profile::DrainReason::Writers, Nx2Profile::Now() - start);
     }
+    return true;
 }
 
 void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
@@ -587,6 +605,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                         idle_hook(idle_argument);
                     }
                     back_quiet.store(true, std::memory_order_release);
+                    WakeFront();
                 }
                 available = published.load(std::memory_order_acquire);
             }
@@ -631,13 +650,16 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                  read_position >= wait_target.load(std::memory_order_relaxed)) &&
                 read_position != available) {
                 consumed.store(read_position, std::memory_order_release);
+                WakeFront();
                 last_store = read_position;
             }
         }
         g_back_busy.store(false, std::memory_order_release);
         consumed.store(read_position, std::memory_order_release);
+        WakeFront();
     }
     back_running.store(false, std::memory_order_release);
+    WakeFront();
 }
 
 } // namespace VideoCommon
