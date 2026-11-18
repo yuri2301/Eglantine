@@ -1717,6 +1717,11 @@ public:
         if (m_vsync_timer) {
             system.CoreTiming().UnscheduleEvent(m_vsync_timer);
         }
+        {
+            std::scoped_lock lk{m_frame_waiter->mutex};
+            m_frame_waiter->alive = false;
+            m_frame_waiter->event = nullptr;
+        }
         for (auto* event : m_events) {
             m_context.CloseEvent(event);
         }
@@ -1777,6 +1782,8 @@ private:
             (Core::Nx2FrameHazard::copies_enabled || Core::Nx2FrameHazard::counting);
         auto& guest_memory = system.ApplicationMemory();
         const auto entered = std::chrono::steady_clock::now();
+        // Only Ocarina of Time waiting for this frame (frames ahead 0) sleeps in the guest (WaitForFrame).
+        m_guest_fence_wait = app_program_id == OcarinaOfTimeProgramId && frames_ahead == 0;
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
@@ -1978,6 +1985,13 @@ private:
     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
     /// Returns whether the fence was reached.
+    ///
+    /// For Ocarina of Time waiting for this frame (m_guest_fence_wait), the service thread sleeps
+    /// in the guest kernel on an event the fence signals, so the game's other threads on its core
+    /// run meanwhile; a host wait held the whole core (from upstream Eglantine 662af0bf; Kokiri
+    /// on an i5-10400F: 42 -> 31 ms a frame). Other games keep the host wait: Mario Kart World
+    /// deadlocked upstream when sleeping in the guest, and measured no gain here.
+    /// EDEN_NX2_FENCE_WAIT=host always waits on the host.
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
             return true;
@@ -1986,44 +2000,63 @@ private:
         const auto start = std::chrono::steady_clock::now();
         // Long enough to cover shader/pipeline compile stalls: a game that gets more than a few
         // command buffers ahead misses the equal-value gates its other channels acquire.
-        const auto deadline = start + std::chrono::milliseconds{4000};
+        auto deadline = start + std::chrono::milliseconds{4000};
         if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
-            // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
-            // about 1 ms per check on Windows, added to every frame. An action left registered
-            // after a timeout fires later on a state nobody waits on.
-            struct Wake {
-                std::mutex mutex;
-                std::condition_variable cv;
-                bool done{};
-            };
-            auto wake = std::make_shared<Wake>();
-            syncpoints.RegisterGuestAction(fence_id, fence_value, [wake] {
-                {
-                    std::scoped_lock lk{wake->mutex};
-                    wake->done = true;
-                }
-                wake->cv.notify_all();
-            });
-            std::unique_lock lk{wake->mutex};
             // Title 1's channels resume and suspend again while they wait on this thread, so any
             // suspension counts, not only an unbroken one.
             bool gpu_waited = false;
-            while (!wake->done && system.IsPoweredOn() &&
-                   std::chrono::steady_clock::now() < deadline) {
+            bool gave_up = false;
+            // Returns true to stop waiting.
+            const auto abort = [&] {
+                if (!system.IsPoweredOn()) {
+                    return true;
+                }
                 if (unless_gpu_waits) {
                     gpu_waited |= system.GPU().HasSuspendedChannels();
                     if (gpu_waited &&
                         std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
-                        return false;
+                        gave_up = true;
+                        return true;
                     }
                 }
-                wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
+                return false;
+            };
+            const auto poll = std::chrono::milliseconds{unless_gpu_waits ? 1 : 50};
+            if (m_guest_fence_wait && GuestFenceWait()) {
+                WaitForFrameInGuest(fence_id, fence_value, deadline, abort, poll);
+            }
+            if (!gave_up && !syncpoints.IsReadyGuest(fence_id, fence_value) &&
+                system.IsPoweredOn() && std::chrono::steady_clock::now() < deadline) {
+                // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps
+                // slept about 1 ms per check on Windows, added to every frame. An action left
+                // registered after a timeout fires later on a state nobody waits on.
+                struct Wake {
+                    std::mutex mutex;
+                    std::condition_variable cv;
+                    bool done{};
+                };
+                auto wake = std::make_shared<Wake>();
+                syncpoints.RegisterGuestAction(fence_id, fence_value, [wake] {
+                    {
+                        std::scoped_lock lk{wake->mutex};
+                        wake->done = true;
+                    }
+                    wake->cv.notify_all();
+                });
+                std::unique_lock lk{wake->mutex};
+                while (!wake->done && !abort() && std::chrono::steady_clock::now() < deadline) {
+                    wake->cv.wait_for(lk, poll);
+                }
+            }
+            if (gave_up) {
+                return false;
             }
         }
         if (unless_gpu_waits && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
             return false;
         }
-        if (!syncpoints.IsReadyGuest(fence_id, fence_value) && m_wait_timeouts++ < 64) {
+        if (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
+            m_wait_timeouts++ < 64) {
             LOG_WARNING(Service, "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {})",
                         m_presents, fence_id, fence_value, syncpoints.GetGuestSyncpointValue(fence_id));
         }
@@ -2035,6 +2068,77 @@ private:
                          .count());
         }
         return syncpoints.IsReadyGuest(fence_id, fence_value);
+    }
+
+    static bool GuestFenceWait() {
+        static const bool guest = [] {
+            const char* value = std::getenv("EDEN_NX2_FENCE_WAIT");
+            return value == nullptr || std::string_view{value} != "host";
+        }();
+        return guest;
+    }
+
+    /// Outlives the session: the fence action may fire on the GPU thread after it is gone, and
+    /// signals only while `alive` (cleared under `mutex` before the event closes).
+    struct FrameFenceWaiter {
+        std::mutex mutex;
+        bool alive{true};
+        Kernel::KEvent* event{};
+        /// The (syncpoint, value) an action is registered for: one per fence, not one per wait
+        /// slice, so nothing piles up while presents give up early.
+        u32 armed_id{~0U};
+        u32 armed_value{};
+    };
+    std::shared_ptr<FrameFenceWaiter> m_frame_waiter = std::make_shared<FrameFenceWaiter>();
+    bool m_guest_fence_wait{};
+
+    /// Sleeps this (guest) service thread until the fence, `deadline` or `abort()` (the caller
+    /// then waits on the host), in slices of at most `poll`.
+    template <typename Abort>
+    void WaitForFrameInGuest(u32 fence_id, u32 fence_value,
+                             const std::chrono::steady_clock::time_point& deadline, Abort& abort,
+                             std::chrono::nanoseconds poll) {
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        auto& waiter = *m_frame_waiter;
+        if (waiter.event == nullptr) {
+            waiter.event = m_context.CreateEvent("nx2:vi2:FrameFence");
+            m_events.push_back(waiter.event);
+        }
+        auto* const event = waiter.event;
+        event->Clear(kernel);
+        if (waiter.armed_id != fence_id || waiter.armed_value != fence_value) {
+            waiter.armed_id = fence_id;
+            waiter.armed_value = fence_value;
+            // Runs on the GPU thread under the manager's lock, or inline if already reached.
+            syncpoints.RegisterGuestAction(fence_id, fence_value,
+                                           [shared = m_frame_waiter, &kernel_ref = kernel] {
+                                               std::scoped_lock lk{shared->mutex};
+                                               if (shared->alive && shared->event != nullptr) {
+                                                   shared->event->Signal(kernel_ref);
+                                               }
+                                           });
+        }
+        while (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
+            if (abort()) {
+                return;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                return;
+            }
+            const auto slice = (std::min)(
+                poll, std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now));
+            s32 index{};
+            Kernel::KSynchronizationObject* object = &event->GetReadableEvent();
+            const Result result = Kernel::KSynchronizationObject::Wait(
+                kernel, &index, &object, 1, kernel.HardwareTimer().GetTick() + slice.count());
+            if (result == Kernel::ResultTerminationRequested) {
+                return;
+            }
+            // A signal for an older fence (an earlier present that gave up) only wakes this
+            // early: the loop checks the value again.
+            event->Clear(kernel);
+        }
     }
 
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
