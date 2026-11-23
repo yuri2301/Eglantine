@@ -437,7 +437,7 @@ bool QueryCacheBase<Traits>::AccelerateHostConditionalRendering() {
         };
     };
 
-    auto& regs = maxwell3d->regs;
+    auto& regs = maxwell3d->DrawRegs();
     if (regs.render_enable_override != Maxwell::Regs::RenderEnable::Override::UseRenderEnable) {
         impl->runtime.EndHostConditionalRendering();
         return false;

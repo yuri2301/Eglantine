@@ -497,7 +497,7 @@ void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
     if (is_indexed) {
         BindHostIndexBuffer();
     } else if constexpr (!HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT) {
-        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        const auto& draw_state = maxwell3d->DrawParams();
         if (draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
             draw_state.topology == Maxwell::PrimitiveTopology::QuadStrip) {
             runtime.BindQuadIndexBuffer(draw_state.topology, draw_state.vertex_buffer.first,
@@ -606,7 +606,7 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
         }
     }
 
-    const auto& cbufs = maxwell3d->state.shader_stages[stage];
+    const auto& cbufs = maxwell3d->DrawShaderStages()[stage];
     GPUVAddr ssbo_addr = cbufs.const_buffers[cbuf_index].address + cbuf_offset;
     if (indirect_offset != ~0U) {
         // The pointer is an entry of a table the constant buffer points to.
@@ -981,7 +981,7 @@ void BufferCache<P>::BindHostIndexBuffer() {
     TouchBuffer(buffer, channel_state->index_buffer.buffer_id);
     const u32 offset = buffer.Offset(channel_state->index_buffer.device_addr);
     const u32 size = channel_state->index_buffer.size;
-    const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    const auto& draw_state = maxwell3d->DrawParams();
     if (draw_state.inline_index_draw_indexes.empty()) {
         SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size);
     } else {
@@ -1064,7 +1064,7 @@ template <class P>
 void BufferCache<P>::RefreshRepackedVertexBuffers() {
     if constexpr (requires { runtime.IsVertexRepacked(u32{}); }) {
         u32 mask = std::exchange(stale_vertex_buffers_mask, 0) & enabled_vertex_buffers_mask;
-        auto& flags = maxwell3d->dirty.flags;
+        auto& flags = maxwell3d->DrawDirty().flags;
         while (mask != 0) {
             const u32 index = std::countr_zero(mask);
             mask &= mask - 1;
@@ -1087,7 +1087,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
 #endif
 
     if (use_optimized_vertex_buffers) {
-        auto& flags = maxwell3d->dirty.flags;
+        auto& flags = maxwell3d->DrawDirty().flags;
         u32 enabled_mask = enabled_vertex_buffers_mask;
         HostBindings<Buffer> bindings{};
         u32 last_index = (std::numeric_limits<u32>::max)();
@@ -1112,7 +1112,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
                 continue;
             }
             flags[Dirty::VertexBuffer0 + index] = false;
-            const u32 stride = maxwell3d->regs.vertex_streams[index].stride;
+            const u32 stride = maxwell3d->DrawRegs().vertex_streams[index].stride;
             const u32 offset = buffer.Offset(binding.device_addr);
             buffer.MarkUsage(offset, binding.size);
             if (!bindings.buffers.empty() && index != last_index + 1) {
@@ -1131,7 +1131,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
     } else {
         HostBindings<typename P::Buffer> host_bindings;
         bool any_valid{false};
-        auto& flags = maxwell3d->dirty.flags;
+        auto& flags = maxwell3d->DrawDirty().flags;
         for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
             const Binding& binding = channel_state->vertex_buffers[index];
             Buffer& buffer = slot_buffers[binding.buffer_id];
@@ -1155,7 +1155,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
                 const Binding& binding = channel_state->vertex_buffers[index];
                 Buffer& buffer = slot_buffers[binding.buffer_id];
 
-                const u32 stride = maxwell3d->regs.vertex_streams[index].stride;
+                const u32 stride = maxwell3d->DrawRegs().vertex_streams[index].stride;
                 const u32 offset = buffer.Offset(binding.device_addr);
                 buffer.MarkUsage(offset, binding.size);
 
@@ -1204,9 +1204,9 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     ++channel_state->uniform_cache_shots[0];
     // Bank 24 (root table 0, NVN2's push constants) is read from bank 17, which such games do not
     // bind: stream the table's current words as that buffer.
-    if (index == 17 && maxwell3d->root_tables.loaded &&
+    if (index == 17 && maxwell3d->DrawRootTables().loaded &&
         channel_state->uniform_buffers[stage][index].size == 0) {
-        const auto& words = maxwell3d->root_tables.tables[0];
+        const auto& words = maxwell3d->DrawRootTables().tables[0];
         const u32 size = (*channel_state->uniform_buffer_sizes)[stage][index];
         const u32 copied = (std::min)(size, static_cast<u32>(sizeof(words)));
         if constexpr (IS_OPENGL) {
@@ -1489,13 +1489,13 @@ void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostTransformFeedbackBuffers() {
-    if (maxwell3d->regs.transform_feedback_enabled == 0) {
+    if (maxwell3d->DrawRegs().transform_feedback_enabled == 0) {
         return;
     }
     HostBindings<typename P::Buffer> host_bindings;
     for (u32 index = 0; index < NUM_TRANSFORM_FEEDBACK_BUFFERS; ++index) {
         const Binding& binding = channel_state->transform_feedback_buffers[index];
-        const auto& control = maxwell3d->regs.transform_feedback.controls[index];
+        const auto& control = maxwell3d->DrawRegs().transform_feedback.controls[index];
         const bool has_layout = control.varying_count != 0 || control.stride != 0;
 
         Buffer* host_buffer = &slot_buffers[NULL_BUFFER_ID];
@@ -1668,9 +1668,9 @@ template <class P>
 void BufferCache<P>::UpdateIndexBuffer() {
     // We have to check for the dirty flags and index count
     // The index count is currently changed without updating the dirty flags
-    const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    const auto& draw_state = maxwell3d->DrawParams();
     const auto& index_buffer_ref = draw_state.index_buffer;
-    auto& flags = maxwell3d->dirty.flags;
+    auto& flags = maxwell3d->DrawDirty().flags;
     if (!flags[Dirty::IndexBuffer]) {
         return;
     }
@@ -1713,8 +1713,8 @@ void BufferCache<P>::UpdateIndexBuffer() {
 
 template <class P>
 void BufferCache<P>::UpdateVertexBuffers() {
-    auto& flags = maxwell3d->dirty.flags;
-    if (!maxwell3d->dirty.flags[Dirty::VertexBuffers]) {
+    auto& flags = maxwell3d->DrawDirty().flags;
+    if (!maxwell3d->DrawDirty().flags[Dirty::VertexBuffers]) {
         return;
     }
     flags[Dirty::VertexBuffers] = false;
@@ -1726,14 +1726,14 @@ void BufferCache<P>::UpdateVertexBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateVertexBuffer(u32 index) {
-    if (!maxwell3d->dirty.flags[Dirty::VertexBuffer0 + index]) {
+    if (!maxwell3d->DrawDirty().flags[Dirty::VertexBuffer0 + index]) {
         return;
     }
-    const auto& array = maxwell3d->regs.vertex_streams[index];
-    const auto& limit = maxwell3d->regs.vertex_stream_limits[index];
+    const auto& array = maxwell3d->DrawRegs().vertex_streams[index];
+    const auto& limit = maxwell3d->DrawRegs().vertex_stream_limits[index];
     const GPUVAddr gpu_addr_begin = array.Address();
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
-    const u64 native_size = native ? maxwell3d->regs.NativeVertexStreamSize(index) : 0;
+    const u64 native_size = native ? maxwell3d->DrawRegs().NativeVertexStreamSize(index) : 0;
     if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) {
         throw std::runtime_error("Native vertex stream exceeds supported 32-bit buffer size");
     }
@@ -1829,7 +1829,7 @@ void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateTransformFeedbackBuffers() {
-    if (maxwell3d->regs.transform_feedback_enabled == 0) {
+    if (maxwell3d->DrawRegs().transform_feedback_enabled == 0) {
         return;
     }
     for (u32 index = 0; index < NUM_TRANSFORM_FEEDBACK_BUFFERS; ++index) {
@@ -1839,7 +1839,7 @@ void BufferCache<P>::UpdateTransformFeedbackBuffers() {
 
 template <class P>
 void BufferCache<P>::UpdateTransformFeedbackBuffer(u32 index) {
-    const auto& binding = maxwell3d->regs.transform_feedback.buffers[index];
+    const auto& binding = maxwell3d->DrawRegs().transform_feedback.buffers[index];
     const GPUVAddr gpu_addr = binding.Address() + binding.start_offset;
     const u32 size = binding.size;
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
@@ -2670,7 +2670,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
         channel_state->uniform_buffer_binding_sizes.fill({});
     }
 
-    auto& flags = maxwell3d->dirty.flags;
+    auto& flags = maxwell3d->DrawDirty().flags;
     if (dirty_index) {
         flags[Dirty::IndexBuffer] = true;
     }

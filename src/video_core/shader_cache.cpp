@@ -85,7 +85,7 @@ void ShaderCache::RefreshDebugRejections(bool unrejected) {
     }
     // shader_infos may point at removed programs: every channel must refresh its stages.
     for (const size_t id : active_channel_ids) {
-        channel_storage[id].maxwell3d.dirty.flags[VideoCommon::Dirty::Shaders] = true;
+        channel_storage[id].maxwell3d.DrawDirty().flags[VideoCommon::Dirty::Shaders] = true;
     }
     LOG_INFO(HW_GPU, "Debug server rejections applied: {} cached programs dropped{}", ranges.size(),
              unrejected ? ", earlier rejections forgotten" : "");
@@ -118,7 +118,7 @@ ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_)
 // geometry program (per-primitive outputs), so pipelines are keyed by them too.
 u64 ShaderCache::MeshStateHash() const {
     using Regs = Tegra::Engines::Maxwell3D::Regs;
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     std::array<u32, 3 + 20> state{regs.reg_array[Regs::MeshShaderA], regs.reg_array[Regs::MeshShaderB],
                                   regs.reg_array[Regs::MeshInitShader]};
     if (regs.IsShaderConfigEnabled(Regs::ShaderType::Geometry)) {
@@ -131,24 +131,24 @@ u64 ShaderCache::MeshStateHash() const {
 }
 
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
-    auto& dirty{maxwell3d->dirty.flags};
+    auto& dirty{maxwell3d->DrawDirty().flags};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
         return last_shaders_valid;
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
 
-    const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};
+    const GPUVAddr base_addr{maxwell3d->DrawRegs().program_region.Address()};
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
-    const bool mesh{native && maxwell3d->regs.IsMeshEnabled()};
+    const bool mesh{native && maxwell3d->DrawRegs().IsMeshEnabled()};
     for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
-        if (!maxwell3d->regs.IsShaderConfigEnabled(index)) {
+        if (!maxwell3d->DrawRegs().IsShaderConfigEnabled(index)) {
             unique_hashes[index] = 0;
             continue;
         }
-        const auto& shader_config{maxwell3d->regs.pipelines[index]};
+        const auto& shader_config{maxwell3d->DrawRegs().pipelines[index]};
         const auto program{static_cast<Tegra::Engines::Maxwell3D::Regs::ShaderType>(index)};
         if (program == Tegra::Engines::Maxwell3D::Regs::ShaderType::Pixel &&
-            !maxwell3d->regs.rasterize_enable) {
+            !maxwell3d->DrawRegs().rasterize_enable) {
             unique_hashes[index] = 0;
             continue;
         }
@@ -225,7 +225,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         dumped_errors.push_back(what);
         LOG_INFO(HW_GPU, "VS cbuf dump for: {}", what.substr(0, 40));
         for (u32 slot = 3; slot < 8; ++slot) {
-            const auto& buffer = maxwell3d->state.shader_stages[0].const_buffers[slot];
+            const auto& buffer = maxwell3d->DrawShaderStages()[0].const_buffers[slot];
             if (!buffer.enabled) continue;
             std::array<u32, 24> words{};
             gpu_memory->ReadBlockUnsafe(buffer.address, words.data(), sizeof(words));
@@ -282,7 +282,7 @@ void ShaderCache::RememberRejection(VAddr addr) {
 void ShaderCache::GetGraphicsEnvironments(GraphicsEnvironments& result,
                                           const std::array<u64, NUM_PROGRAMS>& unique_hashes) {
     size_t env_index{};
-    const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};
+    const GPUVAddr base_addr{maxwell3d->DrawRegs().program_region.Address()};
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
     for (size_t index = 0; index < NUM_PROGRAMS; ++index) {
         if (unique_hashes[index] == 0) {
@@ -290,7 +290,7 @@ void ShaderCache::GetGraphicsEnvironments(GraphicsEnvironments& result,
         }
         const auto program{static_cast<Tegra::Engines::Maxwell3D::Regs::ShaderType>(index)};
         auto& env{result.envs[index]};
-        const auto& config = maxwell3d->regs.pipelines[index];
+        const auto& config = maxwell3d->DrawRegs().pipelines[index];
         const u32 start_address{native ? 0 : config.offset};
         const GPUVAddr address = native
             ? (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]

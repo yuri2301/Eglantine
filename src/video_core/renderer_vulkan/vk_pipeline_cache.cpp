@@ -1309,14 +1309,14 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     }
     // If something is using depth, we can assume that games are not rendering anything which
     // will be used one time.
-    if (maxwell3d->regs.zeta_enable) {
+    if (maxwell3d->DrawRegs().zeta_enable) {
         graphics_miss = "async-build";
         return nullptr;
     }
     // If games are using a small index count, we can assume these are full screen quads.
     // Usually these shaders are only used once for building textures so we can assume they
     // can't be built async
-    const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    const auto& draw_state = maxwell3d->DrawParams();
     if (draw_state.draw_element_count <= 6) {
         return pipeline;
     }

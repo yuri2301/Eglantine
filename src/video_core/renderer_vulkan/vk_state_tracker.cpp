@@ -258,7 +258,8 @@ void StateTracker::SetupTables(Tegra::Control::ChannelState& channel_state) {
 }
 
 void StateTracker::ChangeChannel(Tegra::Control::ChannelState& channel_state) {
-    flags = &channel_state.payload->maxwell_3d.dirty.flags;
+    // The draw view's flags (Maxwell3D::DrawView): what draw preparation reads and clears.
+    flags = &channel_state.payload->maxwell_3d.DrawDirty().flags;
 }
 
 void StateTracker::InvalidateState() {

@@ -401,7 +401,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 
     buffer_cache.SetUniformBuffersState(enabled_uniform_buffer_masks, &uniform_buffer_sizes);
 
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
     const auto config_stage{[&](size_t stage) LAMBDA_FORCEINLINE {
         const Shader::Info& info{stage_infos[stage]};
@@ -416,7 +416,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 ++ssbo_index;
             }
         }
-        const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+        const auto& cbufs{maxwell3d->DrawShaderStages()[stage].const_buffers};
         const auto read_handle{[&](const auto& desc, u32 index) {
             if (desc.handle_program != ~0U) {
                 // Read by the shader from a storage buffer: computed for this draw.

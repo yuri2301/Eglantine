@@ -3238,6 +3238,61 @@ public:
 
     DrawManager draw_manager;
 
+    /// What draw preparation reads (the rasterizer, the buffer and texture caches, pipeline,
+    /// shader and query lookup): this engine's own state for now. A draw thread can point it at
+    /// a per-draw snapshot instead, so those readers use these accessors, not the members.
+    struct DrawView {
+        Regs* regs;
+        DirtyState* dirty;
+        DrawManager::State* draw_state;
+        DrawManager::DrawTextureState* draw_texture_state;
+        DrawManager::IndirectParams* indirect_state;
+        State* state;
+        RootTables* root_tables;
+        EngineHint* engine_state;
+    } draw_view{&regs,
+                &dirty,
+                &draw_manager.draw_state,
+                &draw_manager.draw_texture_state,
+                &draw_manager.indirect_state,
+                &state,
+                &root_tables,
+                &engine_state};
+
+    Regs& DrawRegs() {
+        return *draw_view.regs;
+    }
+    const Regs& DrawRegs() const {
+        return *draw_view.regs;
+    }
+    DirtyState& DrawDirty() {
+        return *draw_view.dirty;
+    }
+    DrawManager::State& DrawParams() {
+        return *draw_view.draw_state;
+    }
+    const DrawManager::State& DrawParams() const {
+        return *draw_view.draw_state;
+    }
+    DrawManager::DrawTextureState& DrawTextureParams() {
+        return *draw_view.draw_texture_state;
+    }
+    DrawManager::IndirectParams& DrawIndirectParams() {
+        return *draw_view.indirect_state;
+    }
+    std::array<State::ShaderStageInfo, Regs::MaxShaderStage>& DrawShaderStages() {
+        return draw_view.state->shader_stages;
+    }
+    const std::array<State::ShaderStageInfo, Regs::MaxShaderStage>& DrawShaderStages() const {
+        return draw_view.state->shader_stages;
+    }
+    RootTables& DrawRootTables() {
+        return *draw_view.root_tables;
+    }
+    EngineHint& DrawEngineHint() {
+        return *draw_view.engine_state;
+    }
+
     GPUVAddr GetMacroAddress(size_t index) const {
         size_t base = 0;
         for (const auto& [addr, count] : macro_segments) {

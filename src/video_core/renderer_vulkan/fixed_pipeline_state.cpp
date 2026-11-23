@@ -104,8 +104,8 @@ void RefreshXfbState(VideoCommon::TransformFeedbackState& state, const Maxwell& 
 } // Anonymous namespace
 
 void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features) {
-    const Maxwell& regs = maxwell3d.regs;
-    const auto topology_ = maxwell3d.draw_manager.draw_state.topology;
+    const Maxwell& regs = maxwell3d.DrawRegs();
+    const auto topology_ = maxwell3d.DrawParams().topology;
 
     driver_id = features.driver_id;
     driver_version = features.driver_version;
@@ -171,7 +171,7 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     smooth_lines.Assign(regs.line_anti_alias_enable != 0 ? 1 : 0);
     alpha_to_coverage_enabled.Assign(regs.anti_alias_alpha_control.alpha_to_coverage != 0 ? 1 : 0);
     alpha_to_one_enabled.Assign(regs.anti_alias_alpha_control.alpha_to_one != 0 ? 1 : 0);
-    app_stage.Assign(maxwell3d.engine_state);
+    app_stage.Assign(maxwell3d.DrawEngineHint());
 
     depth_bounds_min = static_cast<u32>(regs.depth_bounds[0]);
     depth_bounds_max = static_cast<u32>(regs.depth_bounds[1]);
@@ -195,7 +195,7 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
                          : 0;
     point_size = std::bit_cast<u32>(regs.point_size);
 
-    if (maxwell3d.dirty.flags[Dirty::VertexInput]) {
+    if (maxwell3d.DrawDirty().flags[Dirty::VertexInput]) {
         if (features.has_dynamic_vertex_input) {
             // Dirty flag will be reset by the command buffer update
             static constexpr std::array LUT{
@@ -216,7 +216,7 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
                 attribute_types |= static_cast<u64>(type & mask) << (i * 2);
             }
         } else {
-            maxwell3d.dirty.flags[Dirty::VertexInput] = false;
+            maxwell3d.DrawDirty().flags[Dirty::VertexInput] = false;
             enabled_divisors = 0;
             for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
                 const bool is_enabled = regs.vertex_stream_instances.IsInstancingEnabled(index);
@@ -235,8 +235,8 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
             }
         }
     }
-    if (maxwell3d.dirty.flags[Dirty::ViewportSwizzles]) {
-        maxwell3d.dirty.flags[Dirty::ViewportSwizzles] = false;
+    if (maxwell3d.DrawDirty().flags[Dirty::ViewportSwizzles]) {
+        maxwell3d.DrawDirty().flags[Dirty::ViewportSwizzles] = false;
         const auto& transform = regs.viewport_transform;
         std::ranges::transform(transform, viewport_swizzles.begin(), [](const auto& viewport) {
             return static_cast<u16>(viewport.swizzle.raw);
@@ -254,8 +254,8 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
         dynamic_state.Refresh2(regs, topology_, extended_dynamic_state_2);
     }
     if (!extended_dynamic_state_3_blend) {
-        if (maxwell3d.dirty.flags[Dirty::Blending]) {
-            maxwell3d.dirty.flags[Dirty::Blending] = false;
+        if (maxwell3d.DrawDirty().flags[Dirty::Blending]) {
+            maxwell3d.DrawDirty().flags[Dirty::Blending] = false;
             for (size_t index = 0; index < attachments.size(); ++index) {
                 attachments[index].Refresh(regs, index);
                 auto& attachment = attachments[index];

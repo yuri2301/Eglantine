@@ -705,8 +705,8 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     : GenericEnvironment{gpu_memory_, program_base_, start_address_}, maxwell3d{&maxwell3d_} {
     gpu_memory->ReadBlock(program_base + start_address, &sph, sizeof(sph));
     initial_offset = sizeof(sph);
-    texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
-    const auto& regs{maxwell3d->regs};
+    texture_bound = maxwell3d->DrawRegs().bindless_texture_const_buffer_slot;
+    const auto& regs{maxwell3d->DrawRegs()};
     const bool native{maxwell3d->GetNativeMacroEngine().native_turing};
     static const bool geometry_enabled = [] {
         const char* value = std::getenv("EDEN_NX2_EXPERIMENTAL_GEOMETRY");
@@ -725,7 +725,7 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
         }
         if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
             const u32 native_stage = program == Maxwell::ShaderType::Pixel ? 4 : 0;
-            const auto& table = maxwell3d->state.shader_stages[native_stage].const_buffers[1];
+            const auto& table = maxwell3d->DrawShaderStages()[native_stage].const_buffers[1];
             if (table.enabled && table.size && table.size <= Tegra::Engines::Maxwell3D::Regs::MaxConstBufferSize) {
                 std::vector<u8> bytes(table.size);
                 gpu_memory->ReadBlock(table.address, bytes.data(), bytes.size());
@@ -735,7 +735,7 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
         }
         InitializeNativeCode(std::move(lowered_native_), 128, geometry);
     }
-    gp_passthrough_mask = maxwell3d->regs.post_vtg_shader_attrib_skip_mask;
+    gp_passthrough_mask = maxwell3d->DrawRegs().post_vtg_shader_attrib_skip_mask;
     switch (program) {
     case Maxwell::ShaderType::VertexA:
         stage = Shader::Stage::VertexA;
@@ -784,11 +784,11 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     local_memory_size = static_cast<u32>(local_size) + sph.common3.shader_local_memory_crs_size;
     is_proprietary_driver = maxwell3d->GetNativeMacroEngine().native_turing || texture_bound == 2;
     has_hle_engine_state =
-        maxwell3d->engine_state == Tegra::Engines::Maxwell3D::EngineHint::OnHLEMacro;
+        maxwell3d->DrawEngineHint() == Tegra::Engines::Maxwell3D::EngineHint::OnHLEMacro;
 }
 
 u32 GraphicsEnvironment::ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) {
-    const auto& cbuf{maxwell3d->state.shader_stages[stage_index].const_buffers[cbuf_index]};
+    const auto& cbuf{maxwell3d->DrawShaderStages()[stage_index].const_buffers[cbuf_index]};
     ASSERT(cbuf.enabled);
     u32 value{};
     if (cbuf_offset < cbuf.size) {
@@ -825,7 +825,7 @@ std::optional<Shader::ReplaceConstant> GraphicsEnvironment::GetReplaceConstBuffe
 }
 
 Shader::TextureType GraphicsEnvironment::ReadTextureType(u32 handle) {
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
     auto entry =
         ReadTextureInfo(regs.tex_header.Address(), regs.tex_header.limit, via_header_index, handle);
@@ -835,7 +835,7 @@ Shader::TextureType GraphicsEnvironment::ReadTextureType(u32 handle) {
 }
 
 Shader::TexturePixelFormat GraphicsEnvironment::ReadTexturePixelFormat(u32 handle) {
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
     auto entry =
         ReadTextureInfo(regs.tex_header.Address(), regs.tex_header.limit, via_header_index, handle);
@@ -850,7 +850,7 @@ bool GraphicsEnvironment::IsTexturePixelFormatInteger(u32 handle) {
 }
 
 u32 GraphicsEnvironment::ReadViewportTransformState() {
-    const auto& regs{maxwell3d->regs};
+    const auto& regs{maxwell3d->DrawRegs()};
     viewport_transform_state = regs.viewport_scale_offset_enabled;
     return viewport_transform_state;
 }

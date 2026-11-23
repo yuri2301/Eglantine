@@ -753,7 +753,7 @@ public:
             }
         }
         runtime.View3DRegs([this](Maxwell3D& maxwell3d) {
-            if (maxwell3d.regs.transform_feedback_enabled == 0) {
+            if (maxwell3d.DrawRegs().transform_feedback_enabled == 0) {
                 streams_mask = 0;
                 has_started = false;
             }
@@ -982,10 +982,10 @@ private:
         streams_mask = 0; // reset previously recorded streams
         runtime.View3DRegs([this](Maxwell3D& maxwell3d) {
             buffers_count = 0;
-            out_topology = maxwell3d.draw_manager.draw_state.topology;
-            patch_vertices = (std::max)(maxwell3d.regs.patch_vertices, 1U);
+            out_topology = maxwell3d.DrawParams().topology;
+            patch_vertices = (std::max)(maxwell3d.DrawRegs().patch_vertices, 1U);
             if (out_topology == Maxwell3D::Regs::PrimitiveTopology::Patches) {
-                switch (maxwell3d.regs.tessellation.params.output_primitives.Value()) {
+                switch (maxwell3d.DrawRegs().tessellation.params.output_primitives.Value()) {
                 case Maxwell3D::Regs::Tessellation::OutputPrimitives::Points:
                     out_topology = Maxwell3D::Regs::PrimitiveTopology::Points;
                     break;
@@ -999,7 +999,7 @@ private:
                 }
             }
             for (size_t i = 0; i < Maxwell3D::Regs::NumTransformFeedbackBuffers; i++) {
-                const auto& tf = maxwell3d.regs.transform_feedback;
+                const auto& tf = maxwell3d.DrawRegs().transform_feedback;
                 if (tf.buffers[i].enable == 0) {
                     continue;
                 }
@@ -1177,9 +1177,9 @@ public:
             }
             new_query->stride = 1;
             runtime.View3DRegs([new_query, subreport](Maxwell3D& maxwell3d) {
-                new_query->patch_vertices = (std::max)(maxwell3d.regs.patch_vertices, 1U);
+                new_query->patch_vertices = (std::max)(maxwell3d.DrawRegs().patch_vertices, 1U);
                 for (size_t i = 0; i < Maxwell3D::Regs::NumTransformFeedbackBuffers; i++) {
-                    const auto& tf = maxwell3d.regs.transform_feedback;
+                    const auto& tf = maxwell3d.DrawRegs().transform_feedback;
                     if (tf.buffers[i].enable == 0) {
                         continue;
                     }
