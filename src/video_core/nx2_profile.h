@@ -58,6 +58,8 @@ enum class Zone : u32 {
     GpuWrittenFlush, ///< Downloading GPU-written command list words before reading them
     MethodSink,   ///< Split back: state writes applied from the method sink (ConsumeSink)
     DeferredCall, ///< Split back: work the front deferred to it (queries, fences, checks)
+    MethodEffects, ///< 3D methods with side effects (constant buffer data and binds, semaphores,
+                   ///< queries, uploads), draws excluded: "method" keeps the register writes
     Count,
 };
 
@@ -69,7 +71,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait", "GPU-written list download",
-    "method sink", "deferred calls",
+    "method sink", "deferred calls", "method effects",
 };
 
 // "Log performance and memory every 10 seconds" (nx2_gpu_profiler, off by default: its timers cost

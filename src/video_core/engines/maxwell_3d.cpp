@@ -362,6 +362,7 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
+    VideoCommon::Nx2Profile::Scope effects_scope{VideoCommon::Nx2Profile::Zone::MethodEffects};
     if (GetNativeMacroEngine().native_turing && method == MAXWELL3D_REG_INDEX(clear_surface)) {
         LOG_DEBUG(HW_GPU, "Native GPU surface clear: value={:#x}", argument);
     }
@@ -776,6 +777,7 @@ void Maxwell3D::ProcessCBBind(size_t stage_index) {
 }
 
 void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
+    VideoCommon::Nx2Profile::Scope effects_scope{VideoCommon::Nx2Profile::Zone::MethodEffects};
     // Write the input value to the current const buffer at the current position.
     const GPUVAddr buffer_address = regs.const_buffer.Address();
     ASSERT(buffer_address != 0);
